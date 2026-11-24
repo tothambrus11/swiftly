@@ -78,7 +78,7 @@ import Testing
 
     @Test func rejectsFilesThatAreNotBundles() throws {
         var header = Self.bundleHeader(stubSize: 1, containers: [1])
-        header[0x300] = 0 // break the magic number
+        header[0x301] = 0 // break the magic number (00 43 F1 00)
         #expect(throws: SwiftlyError.self) { try BurnBundle.layout(of: header) }
         #expect(throws: SwiftlyError.self) { try BurnBundle.layout(of: Data(count: 16)) }
     }
