@@ -1,4 +1,6 @@
+import CMsi
 import Foundation
+import Subprocess
 import SwiftlyCore
 import SystemPackage
 import WinSDK
@@ -104,6 +106,17 @@ enum Win32 {
         }
     }
 
+    /// Whether the machine is an ARM64 one, whatever architecture this process runs as (an x64
+    /// process runs emulated there).
+    static var machineIsARM64: Bool {
+        var process: USHORT = 0
+        var machine: USHORT = 0
+        guard IsWow64Process2(GetCurrentProcess(), &process, &machine) else {
+            return false
+        }
+        return machine == USHORT(IMAGE_FILE_MACHINE_ARM64)
+    }
+
     /// The System32 directory, where Windows' own tools are.
     static var system32: FilePath {
         var buffer = [WCHAR](repeating: 0, count: Int(MAX_PATH) + 1)
@@ -150,6 +163,116 @@ enum Win32 {
         }
         let id = withUnsafeBytes(of: info.FileId.Identifier) { Array($0) }
         return FileIdentity(volume: info.VolumeSerialNumber, id: id)
+    }
+}
+
+// MARK: Tools and hashes
+
+extension Win32 {
+    /// The application manifest embedded in an executable, if it has one.
+    static func embeddedManifest(of executable: FilePath) -> String? {
+        let flags = DWORD(LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE)
+        guard let module = executable.string.withCString(encodedAs: UTF16.self, { LoadLibraryExW($0, nil, flags) }) else {
+            return nil
+        }
+        defer { FreeLibrary(module) }
+        // MAKEINTRESOURCE(1) / RT_MANIFEST (24)
+        let id = UnsafePointer<WCHAR>(bitPattern: 1)
+        let type = UnsafePointer<WCHAR>(bitPattern: 24)
+        guard let resource = FindResourceW(module, id, type),
+              let loaded = LoadResource(module, resource),
+              let bytes = LockResource(loaded)
+        else {
+            return nil
+        }
+        let size = Int(SizeofResource(module, resource))
+        return String(decoding: UnsafeRawBufferPointer(start: bytes, count: size), as: UTF8.self)
+    }
+
+    /// Runs one of the tools that ship with Windows in `directory` and throws if it fails. Paths are
+    /// passed relative to `directory`: some of these tools mangle non-ASCII command-line arguments.
+    static func runTool(_ name: String, _ arguments: [String], in directory: FilePath) async throws {
+        let result = try await run(
+            .path(self.system32 / name),
+            arguments: Arguments(arguments),
+            workingDirectory: directory,
+            output: .string(limit: 1024 * 1024),
+            error: .string(limit: 1024 * 1024)
+        )
+        guard result.terminationStatus.isSuccess else {
+            let output = [result.standardOutput, result.standardError].joined(separator: "\n")
+            throw SwiftlyError(message: "\(name) \(arguments.joined(separator: " ")) failed: \(result.terminationStatus)\n\(output)")
+        }
+    }
+
+    // MARK: Hashing
+
+    /// A streaming hash through Windows' CNG (BCrypt) API.
+    final class Hash {
+        enum Algorithm: String {
+            case sha256 = "SHA256" // BCRYPT_SHA256_ALGORITHM
+            case sha512 = "SHA512" // BCRYPT_SHA512_ALGORITHM
+        }
+
+        private var provider: BCRYPT_ALG_HANDLE?
+        private var hash: BCRYPT_HASH_HANDLE?
+        private let length: Int
+
+        init(_ algorithm: Algorithm) throws {
+            self.length = algorithm == .sha256 ? 32 : 64
+            var provider: BCRYPT_ALG_HANDLE?
+            var status = algorithm.rawValue.withCString(encodedAs: UTF16.self) {
+                BCryptOpenAlgorithmProvider(&provider, $0, nil, 0)
+            }
+            self.provider = provider
+            guard status >= 0 else {
+                throw SwiftlyError(message: "Starting a \(algorithm.rawValue) hash failed (NTSTATUS \(String(UInt32(bitPattern: status), radix: 16)))")
+            }
+            var hash: BCRYPT_HASH_HANDLE?
+            status = BCryptCreateHash(provider, &hash, nil, 0, nil, 0, 0)
+            self.hash = hash
+            guard status >= 0 else {
+                throw SwiftlyError(message: "Starting a \(algorithm.rawValue) hash failed (NTSTATUS \(String(UInt32(bitPattern: status), radix: 16)))")
+            }
+        }
+
+        deinit {
+            if let hash { BCryptDestroyHash(hash) }
+            if let provider { BCryptCloseAlgorithmProvider(provider, 0) }
+        }
+
+        func update(_ data: Data) throws {
+            let status = data.withUnsafeBytes { buffer -> NTSTATUS in
+                guard let base = buffer.baseAddress, buffer.count > 0 else {
+                    return 0
+                }
+                return BCryptHashData(self.hash, UnsafeMutablePointer(mutating: base.assumingMemoryBound(to: UCHAR.self)), ULONG(buffer.count), 0)
+            }
+            guard status >= 0 else {
+                throw SwiftlyError(message: "Hashing failed (NTSTATUS \(String(UInt32(bitPattern: status), radix: 16)))")
+            }
+        }
+
+        /// The digest as lowercase hex.
+        func finish() throws -> String {
+            var digest = [UCHAR](repeating: 0, count: self.length)
+            let status = BCryptFinishHash(self.hash, &digest, ULONG(digest.count), 0)
+            guard status >= 0 else {
+                throw SwiftlyError(message: "Hashing failed (NTSTATUS \(String(UInt32(bitPattern: status), radix: 16)))")
+            }
+            return digest.map { String(format: "%02x", $0) }.joined()
+        }
+    }
+
+    /// The hex digest of a file's contents.
+    static func hash(_ algorithm: Hash.Algorithm, file: FilePath) throws -> String {
+        let hash = try Hash(algorithm)
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: file.string))
+        defer { try? handle.close() }
+        while let chunk = try handle.read(upToCount: 4 * 1024 * 1024), !chunk.isEmpty {
+            try hash.update(chunk)
+        }
+        return try hash.finish()
     }
 }
 

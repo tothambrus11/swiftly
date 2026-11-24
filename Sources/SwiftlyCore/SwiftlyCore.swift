@@ -21,6 +21,11 @@ public struct SwiftlyCoreContext: Sendable {
     /// home directory location logic.
     public var mockedHomeDir: FilePath?
 
+    /// Set by tests whose toolchains are test archives (with a toolchain's layout, made by the tests)
+    /// rather than swift.org's: platforms that only unpack real installers, such as Windows, accept
+    /// these, and there's no signature to verify.
+    package var installsTestToolchains = false
+
     /// A separate current working directory to use for testing purposes. This overrides
     /// swiftly's default current working directory logic.
     public var currentDirectory: FilePath

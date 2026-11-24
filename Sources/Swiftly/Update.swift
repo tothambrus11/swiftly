@@ -127,15 +127,20 @@ struct Update: SwiftlyCommand {
             assumeYes: self.root.assumeYes
         )
 
-        try await Uninstall.execute(ctx, parameters.oldToolchain, &config, verbose: self.root.verbose)
-        await ctx.message("Successfully updated \(parameters.oldToolchain) -> \(newToolchain)")
+        do {
+            try await Uninstall.execute(ctx, parameters.oldToolchain, &config, verbose: self.root.verbose)
+            await ctx.message("Successfully updated \(parameters.oldToolchain) -> \(newToolchain)")
+        } catch let error as ToolchainNotRemovedError {
+            // The new toolchain is installed; the old one can go later (it may be in use now).
+            await ctx.message("Installed \(newToolchain), but couldn't remove \(parameters.oldToolchain): \(error) Uninstall it later with `swiftly uninstall \(parameters.oldToolchain.name)`.")
+        }
 
         if let postInstallScript {
             guard let postInstallFile = self.postInstallFile else {
                 throw SwiftlyError(message: """
 
                 There are some system dependencies that should be installed before using this toolchain.
-                You can run the following script as the system administrator (e.g. root) to prepare
+                You can run the following script as \(Swiftly.currentPlatform.systemAdministrator) to prepare
                 your system:
 
                 \(postInstallScript)

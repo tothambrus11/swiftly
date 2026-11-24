@@ -66,7 +66,6 @@ extension Platform {
             FilePath(entry).string.lowercased() == directory.string.lowercased()
         }
         pathComponents.removeAll(where: { same($0, tcPath) })
-        // TODO: add runtimes path too after toolchain path. Can compute or maybe add it from other places later
         pathComponents = [tcPath.string] + pathComponents
 
         // Remove swiftly bin directory from the Path entirely

@@ -71,7 +71,9 @@ struct ListAvailable: SwiftlyCommand {
             tc = try await ctx.httpClient.getReleaseToolchains(platform: config.platform).map { ToolchainVersion.stable($0) }
         }
 
-        let toolchains = tc.filter { selector?.matches(toolchain: $0) ?? true }
+        let toolchains = tc.filter {
+            (selector?.matches(toolchain: $0) ?? true) && Swiftly.currentPlatform.unsupportedToolchainReason(ctx, $0) == nil
+        }
 
         let installedToolchains = Set(config.listInstalledToolchains(selector: selector))
         let (inUse, _) = try await selectToolchain(ctx, config: &config)
