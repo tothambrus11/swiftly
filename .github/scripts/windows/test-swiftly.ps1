@@ -129,6 +129,15 @@ Test-Toolchain $Older
 Case "swiftly use $latest" { X swiftly use $latest --global-default --assume-yes }
 Test-Toolchain $latest
 
+Case 'init again keeps the proxies linked to the new swiftly.exe' {
+  X $Swiftly init --assume-yes
+  $links = (& fsutil.exe hardlink list (Join-Path $home_ 'bin\swift.exe') | Out-String)
+  Write-Host $links
+  Assert ($links -match 'swiftly\.exe') 'swift.exe is no longer a hard link to swiftly.exe'
+  $out = (& swift --version 2>&1 | Out-String)
+  Assert ((SwiftVersionOf $out) -eq $latest) "the proxy used $(SwiftVersionOf $out)"
+}
+
 Case "swiftly uninstall $Older" {
   X swiftly uninstall $Older --assume-yes
   $out = (& swiftly list 2>&1 | Out-String); Write-Host $out
