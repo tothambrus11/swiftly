@@ -577,11 +577,7 @@ enum MSVCSysroot {
 
     /// The DLLs the SDK's Swift import libraries refer to that neither the toolchain nor its runtime has.
     static func importLibrariesWithoutDLLs(_ toolchain: WindowsToolchainLayout) -> [String] {
-#if arch(arm64)
-        let triple = "aarch64"
-#else
-        let triple = "x86_64"
-#endif
+        let triple = self.arch == "arm64" ? "aarch64" : "x86_64"
         let libDir = toolchain.sdk / "usr" / "lib" / "swift" / "windows" / triple
         var missing: [String] = []
         for file in ((try? FileManager.default.contentsOfDirectory(atPath: libDir.string)) ?? []).sorted() where file.lowercased().hasSuffix(".lib") {
