@@ -158,7 +158,7 @@ enum MSVCSysroot {
             output: .string(limit: 64 * 1024),
             error: .discarded
         ), result.terminationStatus.isSuccess,
-            let path = result.standardOutput?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty,
+            let path = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty,
             self.hasWindowsSDK()
         else {
             return nil
@@ -172,7 +172,7 @@ enum MSVCSysroot {
             "SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots",
             "SOFTWARE\\WOW6432Node\\Microsoft\\Windows Kits\\Installed Roots",
         ].compactMap { Win32.readMachineString($0, "KitsRoot10") }
-        for root in roots.map(FilePath.init) {
+        for root in roots.map({ FilePath($0) }) {
             let versions = (try? FileManager.default.contentsOfDirectory(atPath: (root / "Include").string)) ?? []
             for version in versions where version.hasPrefix("10.") {
                 if FileManager.default.fileExists(atPath: (root / "Include" / version / "um" / "windows.h").string),
@@ -415,11 +415,12 @@ enum MSVCSysroot {
     }
 
     private static func get(_ ctx: SwiftlyCoreContext, _ url: URL) async throws -> Data {
-        var data = Data()
-        for try await chunk in try await ctx.httpClient.getFile(url: url) {
-            data.append(contentsOf: chunk)
+        let file = fs.mktemp(ext: ".json")
+        try await fs.create(file: file, contents: nil)
+        return try await fs.withTemporary(files: file) {
+            try await ctx.httpClient.getFile(url: url).download(to: file)
+            return try Data(contentsOf: file)
         }
-        return data
     }
 
     private static func digest(_ algorithm: Win32.Hash.Algorithm, of data: Data) throws -> String {

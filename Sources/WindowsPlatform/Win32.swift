@@ -26,7 +26,7 @@ enum Win32 {
             error: .string(limit: 1024 * 1024)
         )
         guard result.terminationStatus.isSuccess else {
-            let output = [result.standardOutput, result.standardError].compactMap { $0 }.joined(separator: "\n")
+            let output = result.standardOutput + "\n" + result.standardError
             throw SwiftlyError(message: "\(name) \(arguments.joined(separator: " ")) failed: \(result.terminationStatus)\n\(output)")
         }
     }

@@ -76,6 +76,27 @@ Uninstall this toolchain after you're finished with it:
 $ swiftly uninstall main-snapshot
 ```
 
+## Windows: the Microsoft C runtime and the Windows SDK
+
+On Windows, swiftly installs each toolchain from the swift.org installer into its own directory under `%LOCALAPPDATA%\swiftly\toolchains`, without running the installer, so several versions can be installed side by side and no administrator rights are needed.
+`swiftly init` adds `%LOCALAPPDATA%\swiftly\bin` to your user `Path` (unless you pass `--no-modify-profile`); open a new terminal afterwards.
+
+To link programs, Swift needs the Microsoft C runtime (MSVC) and the Windows SDK.
+If Visual Studio or its Build Tools are installed with the C++ tools and a Windows SDK, the toolchains use them and swiftly downloads nothing from Microsoft.
+Otherwise swiftly offers to download just the headers and libraries that Swift needs, directly from Microsoft, into `%LOCALAPPDATA%\swiftly\msvc-sysroot-<arch>`, which all toolchains share.
+These are Microsoft software under Microsoft's license terms, which swiftly shows you before downloading; using the MSVC libraries requires a Visual Studio license (Visual Studio Community's terms cover individuals, open source projects and small organizations).
+swiftly asks you to accept them; `--assume-yes` does not accept them for you.
+To accept them non-interactively, for example in CI, set `SWIFTLY_ACCEPT_MSVC_LICENSE=1`:
+
+```
+PS> $env:SWIFTLY_ACCEPT_MSVC_LICENSE = 1
+PS> swiftly init --assume-yes
+```
+
+`SWIFTLY_MSVC` changes where the Microsoft files come from: `auto` (the default) uses Visual Studio when it's installed and swiftly's download otherwise, `portable` always uses swiftly's download, and `system` never downloads anything from Microsoft.
+
+Programs you build link against the Swift runtime DLLs of their toolchain. `swift run` and `swiftly run` put them on the `Path`; to start a program directly, run it with `swiftly run .\program.exe`.
+
 ## Installing toolchains through an HTTP proxy
 
 Swiftly downloads a list of toolchains from https://www.swift.org/ and retrieves them from CDN via https://download.swift.org.

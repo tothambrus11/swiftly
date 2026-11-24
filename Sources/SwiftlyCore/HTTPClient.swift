@@ -618,6 +618,8 @@ public struct SwiftlyHTTPClient: Sendable {
             .init(.amazonlinux2)
         case PlatformDefinition.macOS.name:
             .init(.macos)
+        case "win10":
+            .init(.windows10)
         default:
             throw SwiftlyError(
                 message: "No snapshot toolchains available for platform \(platform.name)")

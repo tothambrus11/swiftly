@@ -7,7 +7,7 @@ on:
   pull_request:
     paths-ignore: ['**.md', 'Documentation/**']
   push:
-    branches: [main, 'windows-*']
+    branches: [main]
     paths-ignore: ['**.md', 'Documentation/**']
   workflow_dispatch:
 
