@@ -101,19 +101,21 @@ enum BurnBundle {
         var containerSizes: [Int]
     }
 
-    /// Reads the `.wixburn` section of the bundle's PE header.
-    static func layout(of header: Data) throws -> Layout {
-        func u16(_ offset: Int) throws -> Int {
-            guard offset >= 0, offset + 2 <= header.count else { throw self.notABundle }
-            return Int(header[header.startIndex + offset]) | Int(header[header.startIndex + offset + 1]) << 8
+    /// Reads the `.wixburn` section the PE header of the bundle points to. `read` returns up to
+    /// `count` bytes of the bundle at `offset`.
+    static func layout(read: (_ offset: Int, _ count: Int) throws -> Data) throws -> Layout {
+        func u16(_ data: Data, _ offset: Int) throws -> Int {
+            guard offset >= 0, offset + 2 <= data.count else { throw self.notABundle }
+            return Int(data[data.startIndex + offset]) | Int(data[data.startIndex + offset + 1]) << 8
         }
-        func u32(_ offset: Int) throws -> Int {
-            try u16(offset) | (u16(offset + 2) << 16)
+        func u32(_ data: Data, _ offset: Int) throws -> Int {
+            try u16(data, offset) | (u16(data, offset + 2) << 16)
         }
 
-        let pe = try u32(0x3C)
-        let sectionCount = try u16(pe + 6)
-        let optionalHeaderSize = try u16(pe + 20)
+        let header = try read(0, 64 * 1024)
+        let pe = try u32(header, 0x3C)
+        let sectionCount = try u16(header, pe + 6)
+        let optionalHeaderSize = try u16(header, pe + 20)
         let sectionTable = pe + 24 + optionalHeaderSize
         var burnSection: Int?
         for i in 0..<sectionCount {
@@ -121,18 +123,22 @@ enum BurnBundle {
             guard entry + 40 <= header.count else { throw self.notABundle }
             let name = header[(header.startIndex + entry)..<(header.startIndex + entry + 8)]
             if name.elementsEqual(Array(".wixburn".utf8)) {
-                burnSection = try u32(entry + 20) // PointerToRawData
+                burnSection = try u32(header, entry + 20) // PointerToRawData
             }
         }
-        guard let burn = burnSection, try u32(burn) == 0x00F1_4300 else {
+        guard let burnSection else {
             throw self.notABundle
         }
         // BURN_SECTION_HEADER: magic, version, bundle GUID, stub size, original checksum,
         // original signature offset/size, format, container count, container sizes.
-        let stubSize = try u32(burn + 24)
-        let count = try u32(burn + 44)
+        let burn = try read(burnSection, 48 + 4 * 64)
+        guard try u32(burn, 0) == 0x00F1_4300 else {
+            throw self.notABundle
+        }
+        let stubSize = try u32(burn, 24)
+        let count = try u32(burn, 44)
         guard count >= 1, count < 64 else { throw self.notABundle }
-        let sizes = try (0..<count).map { try u32(burn + 48 + 4 * $0) }
+        let sizes = try (0..<count).map { try u32(burn, 48 + 4 * $0) }
         return Layout(stubSize: stubSize, containerSizes: sizes)
     }
 
@@ -152,7 +158,10 @@ enum BurnBundle {
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: bundle.string))
         defer { try? handle.close() }
 
-        let layout = try self.layout(of: handle.read(upToCount: 64 * 1024) ?? Data())
+        let layout = try self.layout { offset, count in
+            try handle.seek(toOffset: UInt64(offset))
+            return try handle.read(upToCount: count) ?? Data()
+        }
 
         // The containers follow the engine. The bundle's original Authenticode signature can sit
         // between the UX container and the attached ones, so look for each cabinet header (with the

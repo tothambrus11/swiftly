@@ -199,23 +199,36 @@ public final class HTTPRequestExecutorImpl: HTTPRequestExecutor {
     }
 
     public func getFile(url: URL) async throws -> OpenAPIRuntime.HTTPBody {
-        guard url.scheme == "https", let host = url.host(percentEncoded: false), let baseURL = URL(string: "https://\(host)") else {
-            throw SwiftlyError(message: "Refusing to download \(url): only HTTPS URLs are supported.")
+        var current = url
+        // The transports don't all follow redirects (WinHTTP's doesn't), and Microsoft's URLs
+        // (aka.ms, go.microsoft.com) are redirects.
+        for _ in 0..<10 {
+            guard current.scheme == "https", let host = current.host(percentEncoded: false), let baseURL = URL(string: "https://\(host)") else {
+                throw SwiftlyError(message: "Refusing to download \(current): only HTTPS URLs are supported.")
+            }
+            var path = current.path(percentEncoded: true)
+            if let query = current.query(percentEncoded: true) {
+                path += "?" + query
+            }
+            var request = HTTPRequest(method: .get, scheme: nil, authority: nil, path: path)
+            request.headerFields[.userAgent] = "swiftly/\(SwiftlyCore.version)"
+            let (response, body) = try await self.transport().send(request, body: nil, baseURL: baseURL, operationID: "getFile")
+            if [301, 302, 303, 307, 308].contains(response.status.code),
+               let location = response.headerFields[.location],
+               let next = URL(string: location, relativeTo: current)?.absoluteURL
+            {
+                current = next
+                continue
+            }
+            if response.status == .notFound {
+                throw DownloadNotFoundError(url: current)
+            }
+            guard response.status == .ok, let body else {
+                throw SwiftlyError(message: "Downloading \(current) failed: HTTP \(response.status.code)")
+            }
+            return body
         }
-        var path = url.path(percentEncoded: true)
-        if let query = url.query(percentEncoded: true) {
-            path += "?" + query
-        }
-        var request = HTTPRequest(method: .get, scheme: nil, authority: nil, path: path)
-        request.headerFields[.userAgent] = "swiftly/\(SwiftlyCore.version)"
-        let (response, body) = try await self.transport().send(request, body: nil, baseURL: baseURL, operationID: "getFile")
-        if response.status == .notFound {
-            throw DownloadNotFoundError(url: url)
-        }
-        guard response.status == .ok, let body else {
-            throw SwiftlyError(message: "Downloading \(url) failed: HTTP \(response.status.code)")
-        }
-        return body
+        throw SwiftlyError(message: "Downloading \(url) failed: too many redirects")
     }
 
     public func getCurrentSwiftlyRelease() async throws

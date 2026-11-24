@@ -71,16 +71,22 @@ import Testing
         return Data(bytes)
     }
 
+    /// Reads ranges of `data` like `BurnBundle` reads the bundle file.
+    static func reader(_ data: Data) -> (Int, Int) throws -> Data {
+        { offset, count in data.subdata(in: min(offset, data.count)..<min(offset + count, data.count)) }
+    }
+
     @Test func readsBundleLayout() throws {
-        let layout = try BurnBundle.layout(of: Self.bundleHeader(stubSize: 1_082_368, containers: [220_020, 841_075_862, 572_768_866]))
+        let header = Self.bundleHeader(stubSize: 1_082_368, containers: [220_020, 841_075_862, 572_768_866])
+        let layout = try BurnBundle.layout(read: Self.reader(header))
         #expect(layout == .init(stubSize: 1_082_368, containerSizes: [220_020, 841_075_862, 572_768_866]))
     }
 
     @Test func rejectsFilesThatAreNotBundles() throws {
         var header = Self.bundleHeader(stubSize: 1, containers: [1])
         header[0x301] = 0 // break the magic number (00 43 F1 00)
-        #expect(throws: SwiftlyError.self) { try BurnBundle.layout(of: header) }
-        #expect(throws: SwiftlyError.self) { try BurnBundle.layout(of: Data(count: 16)) }
+        #expect(throws: SwiftlyError.self) { try BurnBundle.layout(read: Self.reader(header)) }
+        #expect(throws: SwiftlyError.self) { try BurnBundle.layout(read: Self.reader(Data(count: 16))) }
     }
 
     @Test func findsCabinetOfTheExpectedSize() throws {
