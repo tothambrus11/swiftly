@@ -165,17 +165,18 @@ struct Install: SwiftlyCommand {
                     "Toolchain \(version) could not be located in \(toolchainBinDir). You can try `swiftly uninstall \(version)` to uninstall it and then `swiftly install \(version)` to install it again."
                 )
             }
-            let toolchainBinDirContents = try await fs.ls(atPath: toolchainBinDir)
+            var toolchainBinDirContents = try await fs.ls(atPath: toolchainBinDir)
+#if os(Windows)
+            // Only executables get proxies; a toolchain's bin directory also has DLLs and assemblies.
+            toolchainBinDirContents = toolchainBinDirContents.filter { $0.lowercased().hasSuffix(".exe") }
+#endif
 
             var existingProxies: [String] = []
 
             for bin in swiftlyBinDirContents {
-                do {
-                    let linkTarget = try await fs.readlink(atPath: swiftlyBinDir / bin)
-                    if linkTarget == proxyTo {
-                        existingProxies.append(bin)
-                    }
-                } catch { continue }
+                if (try? await fs.isProxy(atPath: swiftlyBinDir / bin, to: proxyTo)) == true {
+                    existingProxies.append(bin)
+                }
             }
 
             let overwrite = Set(toolchainBinDirContents).subtracting(existingProxies).intersection(
@@ -207,7 +208,7 @@ struct Install: SwiftlyCommand {
                     try await fs.remove(atPath: proxy)
                 }
 
-                try await fs.symlink(atPath: proxy, linkPath: proxyTo)
+                try await fs.createProxy(atPath: proxy, to: proxyTo)
 
                 pathChanged = true
             }
