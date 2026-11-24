@@ -114,6 +114,20 @@ enum Win32 {
         return FilePath(String(decoding: buffer[..<Int(length)], as: UTF16.self))
     }
 
+    /// Starts `commandLine` without waiting for it. Returns whether it started.
+    static func startProcess(_ commandLine: String, flags: DWORD) -> Bool {
+        var startup = STARTUPINFOW()
+        startup.cb = DWORD(MemoryLayout<STARTUPINFOW>.size)
+        var process = PROCESS_INFORMATION()
+        var command = Array(commandLine.utf16) + [0]
+        guard CreateProcessW(nil, &command, nil, nil, false, flags, nil, nil, &startup, &process) else {
+            return false
+        }
+        CloseHandle(process.hThread)
+        CloseHandle(process.hProcess)
+        return true
+    }
+
     /// Identifies a file or directory: the volume and the 128-bit file id (FileIdInfo), which all
     /// names (hard links, different spellings of a path) of one file share.
     struct FileIdentity: Equatable {

@@ -109,5 +109,34 @@ struct UserEnvironment: SessionEnvironment {
         if pathChanged || !forgotten.isEmpty {
             Win32.broadcastEnvironmentChange()
         }
+        // What self-uninstall couldn't delete (swiftly.exe, which is running it) goes once swiftly
+        // has exited, and the bin and home directories with it if they're empty then.
+        let leftovers = ((try? FileManager.default.contentsOfDirectory(atPath: binDir.string)) ?? []).filter(Windows.isLeftover).map { binDir / $0 }
+        if !leftovers.isEmpty {
+            Windows.deleteWhenUnused(leftovers, thenDirectories: [binDir, Windows().swiftlyHomeDir(ctx)])
+        }
+    }
+}
+
+/// Which Path entry swiftly added (HKCU\Software\swiftly, `PathEntry`), outside the environment
+/// so that it isn't an environment variable.
+struct PathOwnership: @unchecked Sendable {
+    var root: HKEY
+    var subkey: String
+
+    static var swiftly: Self { Self(root: HKEY_CURRENT_USER, subkey: #"Software\swiftly"#) }
+
+    func write(_ entry: FilePath) throws {
+        try Win32.createKey(self.root, self.subkey)
+        _ = try Win32.withKey(self.root, self.subkey, writable: true) { try Win32.writeString($0, "PathEntry", .init(value: entry.string, expandable: false)) }
+    }
+
+    func owns(_ entry: FilePath) throws -> Bool {
+        let stored = try Win32.withKey(self.root, self.subkey, writable: false) { try Win32.readString($0, "PathEntry") } ?? nil
+        return stored.map { UserPath.normalized($0.value) == UserPath.normalized(entry.string) } ?? false
+    }
+
+    func clear() throws {
+        _ = try Win32.withKey(self.root, self.subkey, writable: true) { try Win32.deleteValue($0, "PathEntry") }
     }
 }

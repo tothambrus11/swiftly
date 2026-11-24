@@ -109,7 +109,7 @@ struct SelfUninstall: SwiftlyCommand {
         if verbose {
             await ctx.print("--------------------------")
         }
-        let swiftlyBinary = swiftlyBin / "swiftly"
+        let swiftlyBinary = executablePath(named: "swiftly", in: swiftlyBin)
         // Files that couldn't be deleted yet, such as swiftly itself while it runs on Windows.
         var leftovers: [FilePath] = []
         if try await fs.exists(atPath: swiftlyBin) {

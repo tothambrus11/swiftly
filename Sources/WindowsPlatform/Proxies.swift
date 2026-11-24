@@ -58,7 +58,6 @@ extension Windows {
             try Win32.deleteFile(aside)
             return nil
         } catch {
-            // It's running: a later run of swiftly deletes it once it isn't (removeLeftovers).
             return aside
         }
     }
@@ -182,10 +181,47 @@ extension Windows {
     }
 
     /// Deletes the files that swiftly renamed aside, unless they're still running.
-    static func removeLeftovers(in binDir: FilePath) {
-        for file in (try? FileManager.default.contentsOfDirectory(atPath: binDir.string)) ?? [] where Self.isLeftover(file) {
+    static func removeLeftovers(in binDir: FilePath, kinds: Set<String> = ["old", "new"]) {
+        for file in (try? FileManager.default.contentsOfDirectory(atPath: binDir.string)) ?? []
+            where Self.isLeftover(file) && kinds.contains(String(file.lowercased().split(separator: ".").last ?? ""))
+        {
             try? Win32.deleteFile(binDir / file)
         }
+    }
+
+    /// Starts a helper that waits for this process to exit, then deletes `files` once they're no
+    /// longer in use (retrying for a few minutes), and then each of `directories` that's empty, in
+    /// order. It's for what no later run of swiftly would delete: swiftly.exe after
+    /// `swiftly self-uninstall`, and the bin and home directories. The helper is PowerShell, which
+    /// every Windows has, given its script with -Command (not -EncodedCommand, which endpoint
+    /// protection tends to flag).
+    static func deleteWhenUnused(_ files: [FilePath], thenDirectories directories: [FilePath]) {
+        let script = self.deletionScript(files, directories: directories, waitingFor: GetCurrentProcessId())
+        let powershell = Win32.system32 / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        let commandLine = "\"\(powershell)\" -NoProfile -NonInteractive -Command \"\(script)\""
+        // Detached, so that closing the terminal doesn't end it; out of the job if allowed, so that
+        // ending a job (as CI runners do) doesn't either.
+        let flags = DWORD(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+        if !Win32.startProcess(commandLine, flags: flags | DWORD(CREATE_BREAKAWAY_FROM_JOB)), !Win32.startProcess(commandLine, flags: flags) {
+            // Without the helper, delete them at the next restart, which works when swiftly runs as an administrator.
+            for file in files {
+                _ = file.string.withCString(encodedAs: UTF16.self) { MoveFileExW($0, nil, DWORD(MOVEFILE_DELAY_UNTIL_REBOOT)) }
+            }
+        }
+    }
+
+    /// The helper's script: one line, with single-quoted paths only, so that it passes as one
+    /// double-quoted argument (Windows paths can't contain double quotes).
+    static func deletionScript(_ files: [FilePath], directories: [FilePath], waitingFor process: DWORD) -> String {
+        func quoted(_ path: FilePath) -> String {
+            "'" + path.string.replacingOccurrences(of: "'", with: "''") + "'"
+        }
+        return [
+            "$files = @(\(files.map(quoted).joined(separator: ",")))",
+            "Wait-Process -Id \(process) -ErrorAction SilentlyContinue",
+            "foreach ($attempt in 1..60) { foreach ($file in $files) { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue }; if (-not ($files | Where-Object { Test-Path -LiteralPath $_ })) { break }; Start-Sleep -Seconds 5 }",
+            "foreach ($dir in @(\(directories.map(quoted).joined(separator: ",")))) { if (-not (Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $dir -ErrorAction SilentlyContinue } }",
+        ].joined(separator: "; ")
     }
 
     /// The path of the running executable.

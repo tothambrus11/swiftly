@@ -243,6 +243,48 @@ import WinSDK
             #expect(try await Unlink.existingProxies(ctx) == [bin / "swift.exe"])
         }
     }
+
+    /// self-uninstall removes the proxies and swiftly.exe, also while swiftly.exe runs (as it does
+    /// when swiftly uninstalls itself): that's renamed aside, to be deleted once it exits.
+    @Test func selfUninstallRemovesProxiesAndARunningSwiftly() async throws {
+        try await self.withScratchDirectory { home in
+            let bin = home / "bin"
+            try await fs.mkdir(atPath: bin)
+            let swiftly = bin / "swiftly.exe"
+            try FileManager.default.copyItem(atPath: self.ping.string, toPath: swiftly.string)
+            try Win32.createHardLink(at: bin / "swift.exe", to: swiftly)
+            try Win32.createHardLink(at: bin / "swiftc.exe", to: swiftly)
+            try Data("{}".utf8).write(to: home / "config.json")
+            let running = try self.startRunning(swiftly)
+            defer { running.terminate() }
+            let ctx = SwiftlyCoreContext(mockedHomeDir: home, httpRequestExecutor: HTTPRequestExecutorFail(), outputHandler: nil, inputProvider: nil)
+
+            try await SelfUninstall.execute(ctx, verbose: false)
+
+            // Only a leftover of swiftly.exe may remain (if Windows didn't let it be deleted while it runs).
+            let left = try FileManager.default.contentsOfDirectory(atPath: bin.string)
+            #expect(left.count <= 1)
+            #expect(left.allSatisfy { Windows.isLeftover($0) && $0.lowercased().hasPrefix("swiftly.exe.") })
+            #expect(!FileManager.default.fileExists(atPath: (home / "config.json").string))
+
+            running.terminate()
+            running.waitUntilExit()
+            if FileManager.default.fileExists(atPath: bin.string) {
+                Windows.removeLeftovers(in: bin)
+                #expect(try FileManager.default.contentsOfDirectory(atPath: bin.string).isEmpty)
+            }
+        }
+    }
+
+    /// The helper's script passes as one double-quoted -Command argument.
+    @Test func writesTheDeletionScriptForCommand() {
+        let script = Windows.deletionScript([FilePath(#"C:\it's\swiftly.exe.swiftly-0000aaaa.old"#)], directories: [FilePath(#"C:\it's"#)], waitingFor: 42)
+        #expect(!script.contains("\""))
+        #expect(!script.contains("\n"))
+        #expect(script.contains(#"'C:\it''s\swiftly.exe.swiftly-0000aaaa.old'"#))
+        #expect(script.contains("Wait-Process -Id 42"))
+    }
+
     // MARK: The user's Path and environment
 
     @Test func comparesPathEntriesLikeWindows() {
