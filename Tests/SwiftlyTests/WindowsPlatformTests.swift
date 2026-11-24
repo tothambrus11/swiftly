@@ -5,6 +5,7 @@ import Foundation
 import SystemPackage
 import Testing
 @testable import WindowsPlatform
+import WinSDK
 
 @Suite struct WindowsPlatformTests {
     /// A scratch directory, deleted after `body`.
@@ -241,6 +242,93 @@ import Testing
             try Win32.createHardLink(at: bin / "swift.exe", to: bin / "swiftly.exe")
             #expect(try await Unlink.existingProxies(ctx) == [bin / "swift.exe"])
         }
+    }
+    // MARK: The user's Path and environment
+
+    @Test func comparesPathEntriesLikeWindows() {
+        let expand: (String) -> String = { $0.replacingOccurrences(of: "%LOCALAPPDATA%", with: #"C:\Users\Me\AppData\Local"#) }
+        let bin = FilePath(#"C:\Users\Me\AppData\Local\swiftly\bin"#)
+        func path(_ value: String, expandable: Bool = true) -> Win32.RegistryString { .init(value: value, expandable: expandable) }
+        #expect(UserPath.contains(path(#"C:\Windows;%LOCALAPPDATA%\swiftly\bin"#), bin, expand: expand))
+        #expect(UserPath.contains(path(#"c:\users\me\appdata\local\SWIFTLY\BIN\;C:\Windows"#), bin, expand: expand))
+        #expect(UserPath.contains(path(#""C:/Users/Me/AppData/Local/swiftly/bin""#), bin, expand: expand))
+        #expect(!UserPath.contains(path(#"C:\Users\Me\AppData\Local\swiftly\bin2"#), bin, expand: expand))
+        #expect(!UserPath.contains(path(""), bin, expand: expand))
+        // Windows doesn't expand the entries of a REG_SZ Path.
+        #expect(!UserPath.contains(path(#"%LOCALAPPDATA%\swiftly\bin"#, expandable: false), bin, expand: expand))
+    }
+
+    @Test func addsAndRemovesPathEntries() {
+        let expand: (String) -> String = { $0.replacingOccurrences(of: "%LOCALAPPDATA%", with: #"C:\L"#) }
+        let bin = FilePath(#"C:\L\swiftly\bin"#)
+        #expect(UserPath.adding(bin, to: "") == #"C:\L\swiftly\bin"#)
+        #expect(UserPath.adding(bin, to: #"%USERPROFILE%\.dotnet\tools"#) == #"C:\L\swiftly\bin;%USERPROFILE%\.dotnet\tools"#)
+        // Removing keeps the other entries exactly as written, unexpanded.
+        let path = Win32.RegistryString(value: #"%LOCALAPPDATA%\swiftly\bin;%USERPROFILE%\.dotnet\tools;C:\L\SWIFTLY\bin\"#, expandable: true)
+        #expect(UserPath.removing(bin, from: path, expand: expand) == #"%USERPROFILE%\.dotnet\tools"#)
+    }
+
+    @Test func findsASwiftAheadOfTheProxies() {
+        let bin = FilePath(#"C:\L\swiftly\bin"#)
+        let swiftExists: (FilePath) -> Bool = { $0.string.lowercased().hasSuffix(#"\swift\bin\swift.exe"#) || $0.string == #"rel\swift.exe"# }
+        let machine = Win32.RegistryString(value: #"C:\Windows;;rel;C:\Swift\bin"#, expandable: false)
+        let user = Win32.RegistryString(value: bin.string, expandable: false)
+        #expect(UserPath.swiftAhead(of: bin, machine: machine, user: user, exists: swiftExists) == FilePath(#"C:\Swift\bin\swift.exe"#))
+        // Entries after swiftly's don't matter, and empty or relative ones are skipped.
+        #expect(UserPath.swiftAhead(of: bin, machine: .init(value: #";rel"#, expandable: false), user: .init(value: bin.string + #";C:\Swift\bin"#, expandable: false), exists: swiftExists) == nil)
+    }
+
+    /// The registry calls, on a scratch key: values keep their type, an emptied Path is deleted
+    /// rather than left empty, and swiftly's variables are recorded and forgotten.
+    @Test func roundTripsTheEnvironmentInTheRegistry() throws {
+        let environment = RegistryEnvironment(root: HKEY_CURRENT_USER, subkey: #"Software\swiftly-tests\#(UUID().uuidString)"#)
+        try Win32.createKey(environment.root, environment.subkey)
+        defer { Win32.deleteKey(environment.root, environment.subkey) }
+
+        try environment.update { key in
+            try Win32.writeString(key, "Plain", .init(value: #"C:\x"#, expandable: false))
+            try Win32.writeString(key, "Expandable", .init(value: #"%SystemRoot%\x"#, expandable: true))
+        }
+        #expect(try environment.read("Plain") == .init(value: #"C:\x"#, expandable: false))
+        #expect(try environment.read("Expandable") == .init(value: #"%SystemRoot%\x"#, expandable: true))
+        #expect(try environment.read("Missing") == nil)
+
+        let bin = FilePath(#"C:\swiftly-tests\bin"#)
+        #expect(try environment.addToPath(bin))
+        #expect(try !environment.addToPath(bin))
+        #expect(try environment.read("Path") == .init(value: bin.string, expandable: true))
+        #expect(try environment.removeFromPath(bin))
+        #expect(try environment.read("Path") == nil)
+
+        try environment.update { try Win32.writeString($0, "Path", .init(value: #"%SystemRoot%\y"#, expandable: true)) }
+        #expect(try environment.addToPath(bin))
+        #expect(try environment.read("Path") == .init(value: bin.string + #";%SystemRoot%\y"#, expandable: true))
+        #expect(try environment.removeFromPath(bin))
+        #expect(try environment.read("Path") == .init(value: #"%SystemRoot%\y"#, expandable: true))
+
+        // A REG_SZ Path stays REG_SZ.
+        try environment.update { try Win32.writeString($0, "Path", .init(value: #"C:\z"#, expandable: false)) }
+        #expect(try environment.addToPath(bin))
+        #expect(try environment.read("Path") == .init(value: bin.string + #";C:\z"#, expandable: false))
+
+        // Which Path entry swiftly added.
+        let ownership = PathOwnership(root: environment.root, subkey: environment.subkey + #"\owner"#)
+        #expect(try !ownership.owns(bin))
+        try ownership.write(bin)
+        #expect(try ownership.owns(FilePath(bin.string.uppercased() + #"\"#)))
+        try ownership.clear()
+        #expect(try !ownership.owns(bin))
+
+        // A value that already says the same through REG_EXPAND_SZ stays as it is.
+        let systemRoot = Win32.expandEnvironmentStrings("%SystemRoot%")
+        try environment.update { try Win32.writeString($0, "SWIFTLY_HOME_DIR", .init(value: #"%SystemRoot%\s"#, expandable: true)) }
+        #expect(try environment.record([("SWIFTLY_HOME_DIR", systemRoot + #"\s"#), ("SWIFTLY_BIN_DIR", #"C:\b"#)]) == ["SWIFTLY_BIN_DIR"])
+        #expect(try environment.read("SWIFTLY_HOME_DIR") == .init(value: #"%SystemRoot%\s"#, expandable: true))
+        #expect(try environment.read("SWIFTLY_BIN_DIR") == .init(value: #"C:\b"#, expandable: false))
+        // Only values that still point to this installation are forgotten.
+        #expect(try environment.forget([("SWIFTLY_HOME_DIR", systemRoot + #"\s"#), ("SWIFTLY_BIN_DIR", #"C:\other"#)]) == ["SWIFTLY_HOME_DIR"])
+        #expect(try environment.read("SWIFTLY_HOME_DIR") == nil)
+        #expect(try environment.read("SWIFTLY_BIN_DIR") != nil)
     }
 }
 #endif

@@ -138,3 +138,119 @@ enum Win32 {
         return FileIdentity(volume: info.VolumeSerialNumber, id: id)
     }
 }
+
+// MARK: Environment and registry
+
+extension Win32 {
+    /// Expands `%NAME%` references with this process's environment.
+    static func expandEnvironmentStrings(_ value: String) -> String {
+        value.withCString(encodedAs: UTF16.self) { valueW in
+            let length = ExpandEnvironmentStringsW(valueW, nil, 0)
+            guard length > 0 else { return value }
+            var buffer = [WCHAR](repeating: 0, count: Int(length))
+            guard ExpandEnvironmentStringsW(valueW, &buffer, length) > 0 else { return value }
+            return String(decodingCString: buffer, as: UTF16.self)
+        }
+    }
+
+    /// A string value in the registry, with its type (REG_SZ or REG_EXPAND_SZ), read without expanding it.
+    struct RegistryString: Equatable {
+        var value: String
+        var expandable: Bool
+    }
+
+    /// Opens `root\subkey` for reading, or for reading and writing. Returns nil if the key doesn't exist.
+    static func withKey<T>(_ root: HKEY, _ subkey: String, writable: Bool, _ body: (HKEY) throws -> T) throws -> T? {
+        var key: HKEY?
+        let access = REGSAM(writable ? KEY_QUERY_VALUE | KEY_SET_VALUE : KEY_QUERY_VALUE)
+        let status = subkey.withCString(encodedAs: UTF16.self) {
+            RegOpenKeyExW(root, $0, 0, access, &key)
+        }
+        if status == ERROR_FILE_NOT_FOUND {
+            return nil
+        }
+        guard status == ERROR_SUCCESS, let key else {
+            throw Win32.error("Opening the registry key \(subkey)", DWORD(status))
+        }
+        defer { RegCloseKey(key) }
+        return try body(key)
+    }
+
+    /// Creates `root\subkey` if needed.
+    static func createKey(_ root: HKEY, _ subkey: String) throws {
+        var key: HKEY?
+        let status = subkey.withCString(encodedAs: UTF16.self) {
+            RegCreateKeyExW(root, $0, 0, nil, 0, REGSAM(KEY_QUERY_VALUE | KEY_SET_VALUE), nil, &key, nil)
+        }
+        guard status == ERROR_SUCCESS, let key else {
+            throw Win32.error("Creating the registry key \(subkey)", DWORD(status))
+        }
+        RegCloseKey(key)
+    }
+
+    /// Deletes `root\subkey` and everything in it.
+    static func deleteKey(_ root: HKEY, _ subkey: String) {
+        _ = subkey.withCString(encodedAs: UTF16.self) { RegDeleteTreeW(root, $0) }
+        _ = subkey.withCString(encodedAs: UTF16.self) { RegDeleteKeyW(root, $0) }
+    }
+
+    static func readString(_ key: HKEY, _ name: String) throws -> RegistryString? {
+        try name.withCString(encodedAs: UTF16.self) { nameW in
+            var type: DWORD = 0
+            var size: DWORD = 0
+            let flags = DWORD(RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND)
+            var status = RegGetValueW(key, nil, nameW, flags, &type, nil, &size)
+            if status == ERROR_FILE_NOT_FOUND {
+                return nil
+            }
+            guard status == ERROR_SUCCESS else {
+                throw Win32.error("Reading the registry value \(name)", DWORD(status))
+            }
+            var buffer = [WCHAR](repeating: 0, count: Int(size) / MemoryLayout<WCHAR>.size + 1)
+            status = RegGetValueW(key, nil, nameW, flags, &type, &buffer, &size)
+            guard status == ERROR_SUCCESS else {
+                throw Win32.error("Reading the registry value \(name)", DWORD(status))
+            }
+            return RegistryString(value: String(decodingCString: buffer, as: UTF16.self), expandable: type == DWORD(REG_EXPAND_SZ))
+        }
+    }
+
+    static func writeString(_ key: HKEY, _ name: String, _ value: RegistryString) throws {
+        let units = Array(value.value.utf16) + [0]
+        let status = name.withCString(encodedAs: UTF16.self) { nameW in
+            units.withUnsafeBufferPointer { buffer in
+                let size = buffer.count * MemoryLayout<WCHAR>.size
+                return buffer.baseAddress!.withMemoryRebound(to: BYTE.self, capacity: size) {
+                    RegSetValueExW(key, nameW, 0, DWORD(value.expandable ? REG_EXPAND_SZ : REG_SZ), $0, DWORD(size))
+                }
+            }
+        }
+        guard status == ERROR_SUCCESS else {
+            throw Win32.error("Writing the registry value \(name)", DWORD(status))
+        }
+    }
+
+    static func deleteValue(_ key: HKEY, _ name: String) throws {
+        let status = name.withCString(encodedAs: UTF16.self) { RegDeleteValueW(key, $0) }
+        guard status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND else {
+            throw Win32.error("Deleting the registry value \(name)", DWORD(status))
+        }
+    }
+
+    /// HWND_BROADCAST, which isn't imported (it's a cast in a macro): the message goes to every
+    /// top-level window.
+    private static var broadcast: HWND? {
+        HWND(bitPattern: 0xFFFF)
+    }
+
+    /// How long to wait for each window to handle the message.
+    private static let broadcastTimeoutMilliseconds: UINT = 5000
+
+    /// Tells running programs (Explorer, and so the terminals started from now on) that the
+    /// environment in the registry changed.
+    static func broadcastEnvironmentChange() {
+        _ = "Environment".withCString(encodedAs: UTF16.self) {
+            SendMessageTimeoutW(Self.broadcast, UINT(WM_SETTINGCHANGE), 0, LPARAM(Int(bitPattern: $0)), UINT(SMTO_ABORTIFHUNG), Self.broadcastTimeoutMilliseconds, nil)
+        }
+    }
+}
