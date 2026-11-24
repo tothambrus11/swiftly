@@ -321,10 +321,21 @@ extension Platform {
         let swiftlyHomeBin = binDir / "swiftly.exe"
         await ctx.message("Installing swiftly in \(swiftlyHomeBin)...")
         try await fs.mkdir(.parents, atPath: binDir)
+        // The proxies are hard links to the old swiftly.exe: link them to the new one.
+        var proxies: [String] = []
         if try await fs.exists(atPath: swiftlyHomeBin) {
+            for file in try await fs.ls(atPath: binDir) where file != "swiftly.exe" {
+                if try await fs.isProxy(atPath: binDir / file, to: swiftlyHomeBin) {
+                    proxies.append(file)
+                }
+            }
             try await fs.remove(atPath: swiftlyHomeBin)
         }
         try await fs.copy(atPath: current, toPath: swiftlyHomeBin)
+        for proxy in proxies {
+            try await fs.remove(atPath: binDir / proxy)
+            try await fs.createProxy(atPath: binDir / proxy, to: swiftlyHomeBin)
+        }
     }
 
     // Proxies are hard links to the swiftly.exe in swiftly's bin directory.
