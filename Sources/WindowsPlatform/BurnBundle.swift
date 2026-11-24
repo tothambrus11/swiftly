@@ -148,6 +148,7 @@ enum BurnBundle {
         select: (BurnManifest) throws -> [String],
         verbose: Bool
     ) async throws -> (manifest: BurnManifest, msis: [String: FilePath]) {
+        try await fs.mkdir(.parents, atPath: directory)
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: bundle.string))
         defer { try? handle.close() }
 
