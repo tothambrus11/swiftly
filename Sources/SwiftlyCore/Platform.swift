@@ -1,6 +1,9 @@
 import Foundation
 import Subprocess
 import SystemPackage
+#if os(Windows)
+import WinSDK
+#endif
 
 public struct PlatformDefinition: Codable, Equatable, Sendable {
     /// The name of the platform as it is used in the Swift download URLs.
@@ -304,13 +307,51 @@ extension Platform {
 
 #elseif os(Windows)
 
-    // On Windows, swiftly's own installer puts swiftly.exe in place, so there's nothing to move.
-    public func installSwiftlyBin(_: SwiftlyCoreContext) async throws {}
+    // Copy ourselves to swiftly's bin directory, as on Linux and macOS. (An installer that puts
+    // swiftly.exe there directly makes this a no-op.)
+    public func installSwiftlyBin(_ ctx: SwiftlyCoreContext) async throws {
+        guard ctx.mockedHomeDir == nil, let current = Self.currentExecutable else {
+            return
+        }
+        let binDir = self.swiftlyBinDir(ctx)
+        // Already installed, or a proxy (a hard link to swiftly.exe) in the bin directory.
+        guard current.removingLastComponent() != binDir else {
+            return
+        }
+        let swiftlyHomeBin = binDir / "swiftly.exe"
+        await ctx.message("Installing swiftly in \(swiftlyHomeBin)...")
+        try await fs.mkdir(.parents, atPath: binDir)
+        // The proxies are hard links to the old swiftly.exe: link them to the new one.
+        var proxies: [String] = []
+        if try await fs.exists(atPath: swiftlyHomeBin) {
+            for file in try await fs.ls(atPath: binDir) where file != "swiftly.exe" {
+                if try await fs.isProxy(atPath: binDir / file, to: swiftlyHomeBin) {
+                    proxies.append(file)
+                }
+            }
+            try await fs.remove(atPath: swiftlyHomeBin)
+        }
+        try await fs.copy(atPath: current, toPath: swiftlyHomeBin)
+        for proxy in proxies {
+            try await fs.remove(atPath: binDir / proxy)
+            try await fs.createProxy(atPath: binDir / proxy, to: swiftlyHomeBin)
+        }
+    }
 
-    // Proxies on Windows are stub executables rather than links to swiftly, so there's no
-    // swiftly binary for them to point at yet.
-    public func findSwiftlyBin(_: SwiftlyCoreContext) async throws -> FilePath? {
-        nil
+    // Proxies are hard links to the swiftly.exe in swiftly's bin directory.
+    public func findSwiftlyBin(_ ctx: SwiftlyCoreContext) async throws -> FilePath? {
+        let swiftlyHomeBin = self.swiftlyBinDir(ctx) / "swiftly.exe"
+        return try await fs.exists(atPath: swiftlyHomeBin) ? swiftlyHomeBin : nil
+    }
+
+    /// The path of the running executable.
+    private static var currentExecutable: FilePath? {
+        var buffer = [WCHAR](repeating: 0, count: 32768)
+        let length = GetModuleFileNameW(nil, &buffer, DWORD(buffer.count))
+        guard length > 0, Int(length) < buffer.count else {
+            return nil
+        }
+        return FilePath(String(decoding: buffer[..<Int(length)], as: UTF16.self))
     }
 
 #endif

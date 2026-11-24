@@ -2,6 +2,9 @@ import ArgumentParser
 import Foundation
 import SwiftlyCore
 import SystemPackage
+#if os(Windows)
+import WindowsPlatform
+#endif
 
 public enum SwiftlyVersionMigration {
     case exact(SwiftlyVersion)
@@ -243,9 +246,17 @@ struct Init: SwiftlyCommand {
                 msg += "\n"
 #endif
             }
-#if !os(Windows)
-            // Windows has no shell profile; swiftly's installer adds the bin directory to the user's Path.
             if !noModifyProfile {
+#if os(Windows)
+                // Windows has no shell profile: new terminals get Path from the registry.
+                msg += """
+
+                For your convenience, swiftly will also add its bin directory to your user Path, so that
+                installed items are available in new terminals. This can be suppressed with the
+                '--no-modify-profile' option.
+
+                """
+#else
                 msg += """
 
                 For your convenience, swiftly will also attempt to modify your shell's profile file to make
@@ -253,8 +264,8 @@ struct Init: SwiftlyCommand {
                 '--no-modify-profile' option.
 
                 """
-            }
 #endif
+            }
 
             await ctx.message(msg)
 
@@ -335,7 +346,14 @@ struct Init: SwiftlyCommand {
             try Data(env.utf8).write(to: envFile, options: .atomic)
         }
 
-#if !os(Windows)
+#if os(Windows)
+        if !noModifyProfile {
+            let binDir = Swiftly.currentPlatform.swiftlyBinDir(ctx)
+            if ctx.mockedHomeDir == nil, try Windows.addToUserPath(binDir) {
+                await ctx.message("Added \(binDir) to your user Path.")
+            }
+        }
+#else
         if !noModifyProfile {
             await ctx.message("Updating profile...")
 
@@ -418,15 +436,23 @@ struct Init: SwiftlyCommand {
             }
         }
 
-#if !os(Windows)
         if !quietShellFollowup {
+#if os(Windows)
+            let binDir = Swiftly.currentPlatform.swiftlyBinDir(ctx)
+            await ctx.message("""
+            To begin using installed swiftly from your current terminal, open a new one, or run
+                $env:Path = "\(binDir);" + $env:Path      (PowerShell)
+                set "Path=\(binDir);%Path%"               (cmd)
+
+            """)
+#else
             await ctx.message("""
             To begin using installed swiftly from your current shell, first run the following command:
                 \(sourceLine)
 
             """)
-        }
 #endif
+        }
 
         if pathChanged && !quietShellFollowup {
             try await Self.handlePathChange(ctx)

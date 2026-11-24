@@ -39,17 +39,54 @@ public struct Windows: Platform {
     }
 
     public func install(
-        _: SwiftlyCoreContext, from _: FilePath, version _: ToolchainVersion, verbose _: Bool
+        _ ctx: SwiftlyCoreContext, from tmpFile: FilePath, version: ToolchainVersion, verbose: Bool
     ) async throws {
-        throw Self.notSupportedYet("Installing toolchains")
+        guard try await fs.exists(atPath: tmpFile) else {
+            throw SwiftlyError(message: "\(tmpFile) doesn't exist")
+        }
+
+        let toolchainsDir = self.swiftlyToolchainsDir(ctx)
+        if !(try await fs.exists(atPath: toolchainsDir)) {
+            try await fs.mkdir(.parents, atPath: toolchainsDir)
+        }
+
+        let toolchainDir = toolchainsDir / version.name
+        if try await fs.exists(atPath: toolchainDir) {
+            try await fs.remove(atPath: toolchainDir)
+        }
+
+        await ctx.message("Extracting toolchain...")
+        try await WindowsToolchain.install(ctx, bundle: tmpFile, to: toolchainDir, verbose: verbose)
+
+        guard let layout = WindowsToolchainLayout.read(toolchainDir) else {
+            throw SwiftlyError(message: "The installer for \(version) didn't contain a complete toolchain.")
+        }
+        let setup = await MSVCSysroot.currentSetup(ctx)
+        try MSVCSysroot.configure(layout, for: setup)
+        if setup == .unavailable {
+            await ctx.message("""
+            Warning: \(version) can't link programs until Visual Studio with the C++ tools and a Windows SDK \
+            is installed, or swiftly downloads the Microsoft C runtime and Windows SDK (unset SWIFTLY_MSVC=system).
+            """)
+        }
     }
 
     public func extractSwiftlyAndInstall(_: SwiftlyCoreContext, from _: FilePath) async throws {
         throw Self.notSupportedYet("Installing swiftly")
     }
 
-    public func uninstall(_: SwiftlyCoreContext, _: ToolchainVersion, verbose _: Bool) async throws {
-        throw Self.notSupportedYet("Uninstalling toolchains")
+    public func uninstall(_ ctx: SwiftlyCoreContext, _ toolchain: ToolchainVersion, verbose _: Bool) async throws {
+        let toolchainDir = self.swiftlyToolchainsDir(ctx) / toolchain.name
+        if try await fs.exists(atPath: toolchainDir) {
+            try await fs.remove(atPath: toolchainDir)
+            return
+        }
+        if self.installedToolchains().contains(where: { $0.version == toolchain }) {
+            throw SwiftlyError(message: """
+            \(toolchain) was installed with the swift.org installer, not with swiftly. Uninstall it \
+            from Settings > Apps > Installed apps.
+            """)
+        }
     }
 
     public func getExecutableName() -> String {
@@ -61,16 +98,28 @@ public struct Windows: Platform {
     }
 
     public func verifySystemPrerequisitesForInstall(
-        _: SwiftlyCoreContext, platformName _: String, version _: ToolchainVersion,
+        _ ctx: SwiftlyCoreContext, platformName _: String, version _: ToolchainVersion,
         requireSignatureValidation _: Bool
     ) async throws -> String? {
-        throw Self.notSupportedYet("Installing toolchains")
+        // Toolchains link programs against the Microsoft C runtime and the Windows SDK: use Visual
+        // Studio's, or set up swiftly's sysroot (after the user accepts Microsoft's license terms)
+        // before the toolchain is downloaded.
+        _ = try await MSVCSysroot.prepare(ctx)
+        return nil
     }
 
+    /// The subject of the certificate swift.org signs its Windows installers with.
+    static let toolchainSigner = "Apple Inc."
+
     public func verifyToolchainSignature(
-        _: SwiftlyCoreContext, toolchainFile _: ToolchainFile, archive _: FilePath, verbose _: Bool
+        _ ctx: SwiftlyCoreContext, toolchainFile _: ToolchainFile, archive: FilePath, verbose: Bool
     ) async throws {
-        throw Self.notSupportedYet("Verifying toolchain signatures")
+        // swift.org doesn't publish PGP signatures for its Windows installers. They carry
+        // Authenticode signatures instead, which Windows itself checks.
+        if verbose {
+            await ctx.message("Verifying the toolchain's Authenticode signature...")
+        }
+        try Authenticode.verify(archive, signer: Self.toolchainSigner)
     }
 
     public func verifySwiftlySignature(
@@ -94,17 +143,31 @@ public struct Windows: Platform {
         guard ctx.mockedHomeDir == nil else {
             return nil
         }
-        return Set(self.installedToolchains().map(\.version))
+        return Set(self.swiftlyToolchains(ctx).map(\.version) + self.installedToolchains().map(\.version))
     }
 
     public func findToolchainLocation(_ ctx: SwiftlyCoreContext, _ toolchain: ToolchainVersion) async throws -> FilePath {
         guard ctx.mockedHomeDir == nil else {
             return self.swiftlyToolchainsDir(ctx) / toolchain.identifier
         }
+        if let layout = WindowsToolchainLayout.read(self.swiftlyToolchainsDir(ctx) / toolchain.name) {
+            return layout.toolchain
+        }
         guard let installed = self.installedToolchains().first(where: { $0.version == toolchain }) else {
             throw SwiftlyError(message: "Toolchain \(toolchain) isn't installed.")
         }
         return installed.root
+    }
+
+    /// The toolchains swiftly installed: one directory per version in the toolchains directory.
+    private func swiftlyToolchains(_ ctx: SwiftlyCoreContext) -> [(version: ToolchainVersion, layout: WindowsToolchainLayout)] {
+        let toolchainsDir = self.swiftlyToolchainsDir(ctx)
+        return ((try? FileManager.default.contentsOfDirectory(atPath: toolchainsDir.string)) ?? []).compactMap { name in
+            guard let version = try? ToolchainVersion(parsing: name), let layout = WindowsToolchainLayout.read(toolchainsDir / name) else {
+                return nil
+            }
+            return (version, layout)
+        }
     }
 
     /// The Swift versions Windows Installer has a toolchain registered for, with each toolchain's root.
@@ -123,9 +186,45 @@ public struct Windows: Platform {
     }
 
     public func updateEnvironmentWithToolchain(
-        _: SwiftlyCoreContext, _ environment: Environment, _: ToolchainVersion, path _: String
+        _ ctx: SwiftlyCoreContext, _ environment: Environment, _ toolchain: ToolchainVersion, path: String
     ) async throws -> Environment {
-        environment
+        // Besides the toolchain, programs need the Swift runtime DLLs on the Path, and the compiler
+        // needs SDKROOT to find the Windows platform SDK. Nothing else: no Visual Studio variables,
+        // which the toolchain finds on its own (or, with swiftly's sysroot, doesn't need).
+        let runtimeBin: FilePath?
+        let sdk: FilePath?
+        if ctx.mockedHomeDir == nil, let layout = WindowsToolchainLayout.read(self.swiftlyToolchainsDir(ctx) / toolchain.name) {
+            runtimeBin = layout.runtimeBin
+            sdk = layout.sdk
+        } else if let installed = MsiEnumeration.installed.first(where: { (try? ToolchainVersion(parsing: $0.version)) == toolchain }) {
+            runtimeBin = installed.runtime
+            sdk = installed.sdks.first { $0.lastComponent?.string == "Windows.sdk" }
+        } else {
+            return environment
+        }
+
+        var updates: [Environment.Key: String] = [:]
+        if let runtimeBin {
+            updates["Path"] = Self.insertingAfterFirst(runtimeBin, into: path)
+        }
+        if let sdk {
+            updates["SDKROOT"] = sdk.string + "\\"
+        }
+        return environment.updating(updates)
+    }
+
+    /// Puts `directory` second in a `;`-separated search path, right after the toolchain.
+    static func insertingAfterFirst(_ directory: FilePath, into path: String) -> String {
+        var entries = path.split(separator: ";").map(String.init)
+        entries.removeAll { FilePath($0) == directory }
+        entries.insert(directory.string, at: min(1, entries.count))
+        return entries.joined(separator: ";")
+    }
+
+    /// Adds `directory` (swiftly's bin directory) to the front of the user's Path, so that new
+    /// terminals find swiftly and the proxies. Returns whether the Path changed.
+    public static func addToUserPath(_ directory: FilePath) throws -> Bool {
+        try Win32.addToUserPath(directory)
     }
 
     private static func notSupportedYet(_ operation: String) -> SwiftlyError {
