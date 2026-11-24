@@ -162,6 +162,8 @@ enum WindowsToolchain {
             }
             let bin = swiftRoot / "Toolchains" / toolchainName / "usr" / "bin"
             try await self.addMissingAssemblies(ctx, bin: bin, donors: selection.assemblyDonors.map(msi), work: work)
+            // The unpacked installer payloads take up more than a gigabyte and aren't needed anymore.
+            try await fs.remove(atPath: work / "b")
             try self.linkDuplicates(in: swiftRoot)
 
             try await fs.move(atPath: swiftRoot, toPath: destination)
