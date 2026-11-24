@@ -24,7 +24,7 @@ public enum Proxy {
             }
 #endif
 
-            guard binName != "swiftly" else {
+            guard !isSwiftlyExecutable(binName) else {
                 // Treat this as a swiftly invocation, but first check that we are installed, bootstrapping
                 //  the installation process if we aren't.
                 let configResult: Result<Config, any Error>

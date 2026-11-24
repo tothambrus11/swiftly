@@ -95,3 +95,14 @@ public func executablePath(named name: String, in directory: SystemPackage.FileP
     }
     return directory / (name + suffix)
 }
+
+/// Whether the file name `name` is swiftly's own executable: `swiftly`, and on Windows also
+/// `swiftly.exe`, in any case (file names are case-insensitive there).
+public func isSwiftlyExecutable(_ name: String) -> Bool {
+#if os(Windows)
+    let lowercased = name.lowercased()
+    return lowercased == "swiftly" || lowercased == "swiftly.exe"
+#else
+    name == "swiftly"
+#endif
+}
