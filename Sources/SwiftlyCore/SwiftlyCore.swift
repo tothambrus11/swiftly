@@ -54,6 +54,10 @@ public struct SwiftlyCoreContext: Sendable {
     /// The format
     public var format: OutputFormat = .text
 
+    /// Options for one platform, set by commands that have them (on Windows: "msvc",
+    /// "accept-msvc-license", "msvc-refresh").
+    public var platformOptions: [String: String] = [:]
+
     /// Current time
     public var now: @Sendable () -> Date = { Date() }
 

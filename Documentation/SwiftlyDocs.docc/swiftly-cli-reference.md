@@ -23,7 +23,7 @@ swiftly [--version] [--help]
 Install a new toolchain.
 
 ```
-swiftly install [<version>] [--use] [--verify] [--no-verify] [--post-install-file=<post-install-file>] [--progress-file=<progress-file>] [--format=<format>] [--assume-yes] [--verbose] [--version] [--help]
+swiftly install [<version>] [--msvc=<source>] [--accept-msvc-license] [--msvc-refresh] [--msvc-remove] [--use] [--verify] [--no-verify] [--post-install-file=<post-install-file>] [--progress-file=<progress-file>] [--format=<format>] [--assume-yes] [--verbose] [--version] [--help]
 ```
 
 **version:**
@@ -60,6 +60,28 @@ Install whatever toolchain is currently selected, such as the the one in the .sw
 NOTE: Swiftly downloads toolchains to a temporary file that it later cleans during its installation process. If these files are too big for your system temporary directory, set another location by setting the `TMPDIR` environment variable.
 
     $ TMPDIR=/large/file/tmp/storage swiftly install latest
+
+
+**--msvc=\<source\>:**
+
+*Windows: where toolchains get the Microsoft C runtime and Windows SDK: visual-studio (the default), install-build-tools or portable.*
+
+With install-build-tools, swiftly runs Microsoft's installer for the Visual Studio Build Tools, which shows Microsoft's license terms. With portable, swiftly downloads just the headers and libraries Swift needs from Microsoft, after you accept Microsoft's license terms, into a directory that all your toolchains share. With visual-studio, toolchains that used that directory use Visual Studio again.
+
+
+**--accept-msvc-license:**
+
+*Windows: accept Microsoft's license terms for --msvc=portable without asking.*
+
+
+**--msvc-refresh:**
+
+*Windows: download the Microsoft C runtime and Windows SDK for --msvc=portable again.*
+
+
+**--msvc-remove:**
+
+*Windows: delete the Microsoft C runtime and Windows SDK that --msvc=portable downloaded, and swiftly's configuration of the toolchains for them.*
 
 
 **--use:**
@@ -456,7 +478,7 @@ written to this file as commands that can be run after the installation.
 Perform swiftly initialization into your user account.
 
 ```
-swiftly init [--no-modify-profile] [--overwrite] [--platform=<platform>] [--skip-install] [--quiet-shell-followup] [--assume-yes] [--verbose] [--version] [--help]
+swiftly init [--no-modify-profile] [--overwrite] [--platform=<platform>] [--skip-install] [--quiet-shell-followup] [--msvc=<source>] [--accept-msvc-license] [--assume-yes] [--verbose] [--version] [--help]
 ```
 
 **--no-modify-profile:**
@@ -482,6 +504,16 @@ swiftly init [--no-modify-profile] [--overwrite] [--platform=<platform>] [--skip
 **--quiet-shell-followup:**
 
 *Quiet shell follow up commands*
+
+
+**--msvc=\<source\>:**
+
+*Windows: where toolchains get the Microsoft C runtime and Windows SDK: visual-studio (the default) or portable.*
+
+
+**--accept-msvc-license:**
+
+*Windows: accept Microsoft's license terms for --msvc=portable without asking.*
 
 
 **--assume-yes:**

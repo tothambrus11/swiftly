@@ -1,0 +1,76 @@
+name: Windows MSVC sysroot (opt-in)
+
+# The opt-in sysroot (--msvc=portable) on runners with Visual Studio, the Windows Kits and LLVM hidden.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths-ignore: ['**.md', 'Documentation/**']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-2025}
+          - {arch: arm64, runner: windows-11-arm}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Swift
+        shell: pwsh
+        run: ./scripts/prep-gh-action.ps1
+      - name: Build swiftly
+        run: swift build -c release --product swiftly --static-swift-stdlib
+      - name: Collect swiftly.exe
+        shell: pwsh
+        run: Copy-Item (Join-Path (swift build -c release --show-bin-path) 'swiftly.exe') swiftly.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swiftly-sysroot-${{ matrix.arch }}
+          path: swiftly.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  end-to-end:
+    name: End to end / ${{ matrix.label }}, no Visual Studio
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    # main's modulemap layout isn't mapped correctly yet (the open question of the overlay); its
+    # job reports how far it gets without failing the workflow.
+    continue-on-error: ${{ matrix.experimental == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {label: x64, arch: x64, runner: windows-2025}
+          - {label: arm64, arch: arm64, runner: windows-11-arm}
+          # main has another modulemap layout than the releases.
+          - {label: 'x64, main snapshot', arch: x64, runner: windows-2025, first: main-snapshot, older: 6.4.3, experimental: true}
+    env:
+      JOB_LABEL: ${{ matrix.label }}, no Visual Studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: swiftly-sysroot-${{ matrix.arch }}
+          path: ${{ runner.temp }}/swiftly-download
+      - name: Hide Visual Studio, the Windows Kits and LLVM
+        shell: pwsh
+        run: ./.github/scripts/windows/hide-vs.ps1 | Out-Host
+      - name: Test the opt-in sysroot
+        shell: pwsh
+        run: |
+          $more = @{}
+          if ('${{ matrix.first }}') { $more.First = '${{ matrix.first }}'; $more.Older = '${{ matrix.older }}' }
+          ./.github/scripts/windows/test-msvc-sysroot.ps1 -Swiftly "$env:RUNNER_TEMP\swiftly-download\swiftly.exe" @more

@@ -46,6 +46,10 @@ struct Init: SwiftlyCommand {
     var skipInstall: Bool = false
     @Flag(help: "Quiet shell follow up commands")
     var quietShellFollowup: Bool = false
+    @Option(help: ArgumentHelp("Windows: where toolchains get the Microsoft C runtime and Windows SDK: visual-studio (the default) or portable.", valueName: "source"))
+    var msvc: String?
+    @Flag(help: "Windows: accept Microsoft's license terms for --msvc=portable without asking.")
+    var acceptMsvcLicense: Bool = false
 
     @OptionGroup var root: GlobalOptions
 
@@ -53,7 +57,7 @@ struct Init: SwiftlyCommand {
         ?? "Do not attempt to modify the profile file to set environment variables (e.g. PATH) on login."
 
     private enum CodingKeys: String, CodingKey {
-        case noModifyProfile, overwrite, platform, skipInstall, root, quietShellFollowup
+        case noModifyProfile, overwrite, platform, skipInstall, root, quietShellFollowup, msvc, acceptMsvcLicense
     }
 
     public mutating func validate() throws {}
@@ -63,6 +67,12 @@ struct Init: SwiftlyCommand {
     }
 
     mutating func run(_ ctx: SwiftlyCoreContext = Swiftly.createDefaultContext()) async throws {
+        var ctx = ctx
+        ctx.platformOptions["msvc"] = self.msvc
+        ctx.platformOptions["accept-msvc-license"] = self.acceptMsvcLicense ? "true" : nil
+        if self.skipInstall, let msvc = self.msvc {
+            await ctx.message("Note: --msvc=\(msvc) takes effect when a toolchain is installed, as with `swiftly install --msvc=\(msvc)`.")
+        }
         try await Self.execute(ctx, assumeYes: self.root.assumeYes, noModifyProfile: self.noModifyProfile, overwrite: self.overwrite, platform: self.platform, verbose: self.root.verbose, skipInstall: self.skipInstall, quietShellFollowup: self.quietShellFollowup)
     }
 

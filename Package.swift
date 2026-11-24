@@ -188,6 +188,7 @@ let package = Package(
                 .linkedLibrary("cabinet", .when(platforms: [.windows])),
                 .linkedLibrary("bcrypt", .when(platforms: [.windows])),
                 .linkedLibrary("wintrust", .when(platforms: [.windows])),
+                .linkedLibrary("version", .when(platforms: [.windows])),
             ]
         ),
         .target(

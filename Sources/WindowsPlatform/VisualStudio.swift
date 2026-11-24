@@ -10,6 +10,10 @@ import WinSDK
 /// as with the swift.org installer. swiftly checks for them but doesn't install them.
 enum VisualStudio {
     enum Status: Equatable {
+        var isReady: Bool {
+            if case .ready = self { true } else { false }
+        }
+
         /// Visual Studio with the C++ tools for this architecture and a Windows SDK.
         case ready(installation: FilePath)
         /// Visual Studio is installed, but without the C++ tools or without a Windows SDK.
