@@ -33,7 +33,7 @@ struct Init: SwiftlyCommand {
         abstract: "Perform swiftly initialization into your user account."
     )
 
-    @Flag(name: [.customShort("n"), .long], help: "Do not attempt to modify the profile file to set environment variables (e.g. PATH) on login.")
+    @Flag(name: [.customShort("n"), .long], help: ArgumentHelp(Init.noModifyProfileHelp))
     var noModifyProfile: Bool = false
     @Flag(name: .shortAndLong, help: """
     Overwrite the existing swiftly installation found at the configured SWIFTLY_HOME, if any. If this option is unspecified and an existing \
@@ -48,6 +48,9 @@ struct Init: SwiftlyCommand {
     var quietShellFollowup: Bool = false
 
     @OptionGroup var root: GlobalOptions
+
+    private static let noModifyProfileHelp = Swiftly.currentPlatform.sessionEnvironment?.noModifyProfileHelp
+        ?? "Do not attempt to modify the profile file to set environment variables (e.g. PATH) on login."
 
     private enum CodingKeys: String, CodingKey {
         case noModifyProfile, overwrite, platform, skipInstall, root, quietShellFollowup
@@ -243,18 +246,19 @@ struct Init: SwiftlyCommand {
                 msg += "\n"
 #endif
             }
-#if !os(Windows)
-            // Windows has no shell profile; swiftly's installer adds the bin directory to the user's Path.
             if !noModifyProfile {
-                msg += """
+                if let session = Swiftly.currentPlatform.sessionEnvironment {
+                    msg += session.initIntroduction(ctx)
+                } else {
+                    msg += """
 
-                For your convenience, swiftly will also attempt to modify your shell's profile file to make
-                installed items available in your environment upon login. This can be suppressed with the
-                '--no-modify-profile' option.
+                    For your convenience, swiftly will also attempt to modify your shell's profile file to make
+                    installed items available in your environment upon login. This can be suppressed with the
+                    '--no-modify-profile' option.
 
-                """
+                    """
+                }
             }
-#endif
 
             await ctx.message(msg)
 
@@ -321,9 +325,15 @@ struct Init: SwiftlyCommand {
         // Move our executable over to the correct place
         try await Swiftly.currentPlatform.installSwiftlyBin(ctx)
 
+        // Platforms without a shell profile make swiftly available in new sessions their own way.
+        let session = Swiftly.currentPlatform.sessionEnvironment
+        if let session {
+            try await session.setUp(ctx, modifyPath: !noModifyProfile)
+        }
+
         let envFileExists = try await fs.exists(atPath: envFile)
 
-        if overwrite || !envFileExists {
+        if session == nil && (overwrite || !envFileExists) {
             await ctx.message("Creating shell environment file for the user...")
             var env = ""
             if shell.hasSuffix("fish") {
@@ -335,8 +345,7 @@ struct Init: SwiftlyCommand {
             try Data(env.utf8).write(to: envFile, options: .atomic)
         }
 
-#if !os(Windows)
-        if !noModifyProfile {
+        if session == nil && !noModifyProfile {
             await ctx.message("Updating profile...")
 
             let userHome = ctx.mockedHomeDir ?? fs.home
@@ -381,7 +390,6 @@ struct Init: SwiftlyCommand {
                 try Data(sourceLine.utf8).append(to: profileHome)
             }
         }
-#endif
 
         var postInstall: String?
         var pathChanged = false
@@ -418,15 +426,19 @@ struct Init: SwiftlyCommand {
             }
         }
 
-#if !os(Windows)
         if !quietShellFollowup {
-            await ctx.message("""
-            To begin using installed swiftly from your current shell, first run the following command:
-                \(sourceLine)
+            if let session = Swiftly.currentPlatform.sessionEnvironment {
+                if let instructions = session.currentSessionInstructions(ctx) {
+                    await ctx.message(instructions)
+                }
+            } else {
+                await ctx.message("""
+                To begin using installed swiftly from your current shell, first run the following command:
+                    \(sourceLine)
 
-            """)
+                """)
+            }
         }
-#endif
 
         if pathChanged && !quietShellFollowup {
             try await Self.handlePathChange(ctx)

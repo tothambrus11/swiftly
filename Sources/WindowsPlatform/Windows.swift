@@ -82,7 +82,30 @@ public struct Windows: Platform {
     public func detectPlatform(
         _: SwiftlyCoreContext, disableConfirmation _: Bool, platform _: String?
     ) async throws -> PlatformDefinition {
-        PlatformDefinition(name: "win10", nameFull: "windows10", namePretty: "Windows 10")
+        .windows10
+    }
+
+    /// swift.org names the Windows download directory like the file, and uses "-arm64":
+    /// `swift-6.4.3-release/windows10-arm64/swift-6.4.3-RELEASE/swift-6.4.3-RELEASE-windows10-arm64.exe`.
+    public func toolchainDownloadPlatform(_ platform: PlatformDefinition) -> (directory: String, file: String) {
+#if arch(arm64)
+        (platform.nameFull + "-arm64", platform.nameFull + "-arm64")
+#else
+        (platform.nameFull, platform.nameFull)
+#endif
+    }
+
+    // swiftly.exe isn't installed into its bin directory yet, and there are no proxies to run it;
+    // both are a follow-up.
+    public func installSwiftlyBin(_: SwiftlyCoreContext) async throws {}
+
+    public func findSwiftlyBin(_: SwiftlyCoreContext) async throws -> FilePath? {
+        nil
+    }
+
+    /// There's no shell profile on Windows: new sessions get their environment from the registry.
+    public var sessionEnvironment: (any SessionEnvironment)? {
+        UserEnvironment()
     }
 
     public func getShell() async throws -> String {

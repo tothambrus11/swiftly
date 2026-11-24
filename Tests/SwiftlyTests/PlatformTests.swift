@@ -1,7 +1,9 @@
 import Foundation
+import OpenAPIRuntime
 import Subprocess
 @testable import Swiftly
 @testable import SwiftlyCore
+import SwiftlyWebsiteAPI
 import SystemPackage
 import Testing
 #if canImport(Darwin)
@@ -9,6 +11,92 @@ import Darwin
 #endif
 
 @Suite struct PlatformTests {
+    @Test func toolchainDownloadPlatform() {
+#if os(Windows)
+        let (directory, file) = Swiftly.currentPlatform.toolchainDownloadPlatform(.windows10)
+#if arch(arm64)
+        #expect(directory == "windows10-arm64")
+        #expect(file == "windows10-arm64")
+#else
+        #expect(directory == "windows10")
+        #expect(file == "windows10")
+#endif
+#else
+        let (directory, file) = Swiftly.currentPlatform.toolchainDownloadPlatform(.ubuntu2404)
+#if os(Linux) && arch(arm64)
+        #expect(directory == "ubuntu2404-aarch64")
+        #expect(file == "ubuntu24.04-aarch64")
+#else
+        #expect(directory == "ubuntu2404")
+        #expect(file == "ubuntu24.04")
+#endif
+#endif
+    }
+
+    /// swift.org lists Windows snapshots for ARM64 under "arm64", other platforms' under "aarch64".
+    @Test func arm64SnapshotsOfWindows() async throws {
+        struct Executor: HTTPRequestExecutor {
+            func getCurrentSwiftlyRelease() async throws -> SwiftlyWebsiteAPI.Components.Schemas.SwiftlyRelease { fatalError(unmockedMsg) }
+            func getReleaseToolchains() async throws -> [Components.Schemas.Release] { fatalError(unmockedMsg) }
+            func getSnapshotToolchains(branch _: SwiftlyWebsiteAPI.Components.Schemas.SourceBranch, platform _: SwiftlyWebsiteAPI.Components.Schemas.PlatformIdentifier) async throws -> SwiftlyWebsiteAPI.Components.Schemas.DevToolchains {
+                SwiftlyWebsiteAPI.Components.Schemas.DevToolchains(arm64: [
+                    SwiftlyWebsiteAPI.Components.Schemas.DevToolchainForArch(
+                        name: nil, date: "", dir: "swift-DEVELOPMENT-SNAPSHOT-2026-11-01-a", download: "", downloadSignature: nil, debugInfo: nil
+                    ),
+                ])
+            }
+
+            func getGpgKeys() async throws -> OpenAPIRuntime.HTTPBody { fatalError(unmockedMsg) }
+            func getSwiftlyRelease(url _: URL) async throws -> OpenAPIRuntime.HTTPBody { fatalError(unmockedMsg) }
+            func getSwiftlyReleaseSignature(url _: URL) async throws -> OpenAPIRuntime.HTTPBody { fatalError(unmockedMsg) }
+            func getSwiftToolchainFile(_: ToolchainFile) async throws -> OpenAPIRuntime.HTTPBody { fatalError(unmockedMsg) }
+            func getSwiftToolchainFileSignature(_: ToolchainFile) async throws -> OpenAPIRuntime.HTTPBody { fatalError(unmockedMsg) }
+        }
+        let client = SwiftlyHTTPClient(httpRequestExecutor: Executor())
+#if os(Windows)
+        let snapshots = try await client.getSnapshotToolchains(platform: .windows10, arch: "aarch64", branch: .main)
+        #expect(snapshots.map(\.date) == ["2026-11-01"])
+#else
+        // Elsewhere, "arm64" isn't aarch64: no snapshots (an empty list, or an error saying so).
+        let snapshots = (try? await client.getSnapshotToolchains(platform: .windows10, arch: "aarch64", branch: .main)) ?? []
+        #expect(snapshots.isEmpty)
+#endif
+    }
+
+#if os(Linux) || os(macOS)
+    @Test func proxiesAreSymbolicLinks() async throws {
+        let dir = fs.mktemp()
+        try await fs.mkdir(.parents, atPath: dir)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let swiftly = dir / "swiftly"
+        try Data("swiftly".utf8).write(to: swiftly)
+
+        try await Swiftly.currentPlatform.createProxy(SwiftlyTests.ctx, at: dir / "swift", to: swiftly)
+
+        #expect(try await fs.isSymLink(atPath: dir / "swift"))
+        #expect(try await Swiftly.currentPlatform.isProxy(SwiftlyTests.ctx, dir / "swift", to: swiftly))
+        #expect(try await !Swiftly.currentPlatform.isProxy(SwiftlyTests.ctx, swiftly, to: swiftly))
+        #expect(Swiftly.currentPlatform.proxyCandidates(["swift", "libFoo.so"]) == ["swift", "libFoo.so"])
+    }
+
+    /// Homebrew's proxies link to `$(brew --prefix)/bin/swiftly`, which links into the Cellar (#454):
+    /// a proxy through a chain of links, relative ones too, is still swiftly's.
+    @Test func proxiesThroughAChainOfLinks() async throws {
+        let dir = fs.mktemp()
+        try await fs.mkdir(.parents, atPath: dir / "Cellar")
+        try await fs.mkdir(.parents, atPath: dir / "bin")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let swiftly = dir / "Cellar" / "swiftly"
+        try Data("swiftly".utf8).write(to: swiftly)
+        try FileManager.default.createSymbolicLink(atPath: (dir / "bin" / "swiftly").string, withDestinationPath: "../Cellar/swiftly")
+        try await fs.symlink(atPath: dir / "swift", linkPath: dir / "bin" / "swiftly")
+
+        #expect(try await Swiftly.currentPlatform.isProxy(SwiftlyTests.ctx, dir / "swift", to: swiftly))
+        #expect(try await Swiftly.currentPlatform.isProxy(SwiftlyTests.ctx, dir / "swift", to: dir / "bin" / "swiftly"))
+        #expect(try await !Swiftly.currentPlatform.isProxy(SwiftlyTests.ctx, dir / "swift", to: dir / "other"))
+    }
+#endif
+
     func mockToolchainDownload(version: String) async throws -> (FilePath, ToolchainVersion, FilePath) {
         let mockDownloader = MockToolchainDownloader(executables: ["swift"])
         let version = try! ToolchainVersion(parsing: version)

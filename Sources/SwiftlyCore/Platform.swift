@@ -56,6 +56,7 @@ public struct PlatformDefinition: Codable, Equatable, Sendable {
     public static let debian13 = PlatformDefinition(
         name: "debian13", nameFull: "debian13", namePretty: "Debian GNU/Linux 13"
     )
+    public static let windows10 = PlatformDefinition(name: "win10", nameFull: "windows10", namePretty: "Windows 10")
 }
 
 public struct RunProgramError: Swift.Error {
@@ -156,6 +157,54 @@ public protocol Platform: Sendable {
 
     /// The toolchains the system itself reports as installed, including any installed outside of swiftly.
     func discoverInstalledToolchains(_ ctx: SwiftlyCoreContext) async throws -> Set<ToolchainVersion>?
+
+    /// The platform parts of a toolchain's download URL: the directory below the release category and
+    /// the platform suffix of the file name, such as `ubuntu2404-aarch64` and `ubuntu24.04-aarch64`.
+    func toolchainDownloadPlatform(_ platform: PlatformDefinition) -> (directory: String, file: String)
+
+    /// Installs the running swiftly executable into swiftly's bin directory, if it isn't running from there.
+    func installSwiftlyBin(_ ctx: SwiftlyCoreContext) async throws
+
+    /// The swiftly executable that proxies run, or nil if there's none.
+    func findSwiftlyBin(_ ctx: SwiftlyCoreContext) async throws -> FilePath?
+
+    /// Creates the proxy `proxy`, which runs `swiftlyBin` under another name.
+    func createProxy(_ ctx: SwiftlyCoreContext, at proxy: FilePath, to swiftlyBin: FilePath) async throws
+
+    /// Whether `file` is a proxy that `createProxy` created for `swiftlyBin`.
+    func isProxy(_ ctx: SwiftlyCoreContext, _ file: FilePath, to swiftlyBin: FilePath) async throws -> Bool
+
+    /// The files of a toolchain's bin directory that get proxies.
+    func proxyCandidates(_ files: [String]) -> [String]
+
+    /// Removes a file from swiftly's bin directory: a proxy, or swiftly itself. Returns a file that's left
+    /// behind to be deleted later (because it's running, for example), or nil when it's gone.
+    func removeFromBinDir(_ ctx: SwiftlyCoreContext, _ proxy: FilePath) async throws -> FilePath?
+
+    /// How new sessions find swiftly on platforms that don't use a shell profile and swiftly's
+    /// `env.sh`/`env.fish`, or nil on platforms that do.
+    var sessionEnvironment: (any SessionEnvironment)? { get }
+}
+
+/// Makes swiftly available in new sessions on a platform that doesn't use a shell profile, such as
+/// Windows, where new sessions read the user's environment from the registry.
+public protocol SessionEnvironment: Sendable {
+    /// The help of `swiftly init --no-modify-profile`.
+    var noModifyProfileHelp: String { get }
+
+    /// What `swiftly init` tells the user it will do to make swiftly available in new sessions,
+    /// unless `--no-modify-profile` is given.
+    func initIntroduction(_ ctx: SwiftlyCoreContext) -> String
+
+    /// Records swiftly's settings (such as SWIFTLY_HOME_DIR) for new sessions and, if `modifyPath`,
+    /// adds swiftly's bin directory to their PATH. Runs on every `swiftly init`.
+    func setUp(_ ctx: SwiftlyCoreContext, modifyPath: Bool) async throws
+
+    /// How to start using swiftly in the session that ran `swiftly init`, or nil if there's nothing to do.
+    func currentSessionInstructions(_ ctx: SwiftlyCoreContext) -> String?
+
+    /// Undoes `setUp`. `swiftly self-uninstall` runs it last, once swiftly's files are gone.
+    func tearDown(_ ctx: SwiftlyCoreContext, verbose: Bool) async throws
 }
 
 extension Platform {
@@ -184,6 +233,48 @@ extension Platform {
     }
 
     public func discoverInstalledToolchains(_: SwiftlyCoreContext) async throws -> Set<ToolchainVersion>? {
+        nil
+    }
+
+    public func toolchainDownloadPlatform(_ platform: PlatformDefinition) -> (directory: String, file: String) {
+#if !os(macOS) && arch(arm64)
+        (platform.name + "-aarch64", platform.nameFull + "-aarch64")
+#else
+        (platform.name, platform.nameFull)
+#endif
+    }
+
+    public func createProxy(_: SwiftlyCoreContext, at proxy: FilePath, to swiftlyBin: FilePath) async throws {
+        try await fs.symlink(atPath: proxy, linkPath: swiftlyBin)
+    }
+
+    /// A proxy is a symbolic link to `swiftlyBin`, directly or through a chain of up to 10 links, as
+    /// with Homebrew, where proxies point to `$(brew --prefix)/bin/swiftly`, which links into the
+    /// Cellar (#454).
+    public func isProxy(_: SwiftlyCoreContext, _ file: FilePath, to swiftlyBin: FilePath) async throws -> Bool {
+        var path = file
+        for _ in 0..<10 { // More than 10 jumps is probably a symlink loop.
+            guard let target = try? await fs.readlink(atPath: path) else {
+                return false
+            }
+            path = target.isAbsolute ? target : path.parent.pushing(target).lexicallyNormalized()
+            if path == swiftlyBin {
+                return true
+            }
+        }
+        return false
+    }
+
+    public func proxyCandidates(_ files: [String]) -> [String] {
+        files
+    }
+
+    public func removeFromBinDir(_: SwiftlyCoreContext, _ proxy: FilePath) async throws -> FilePath? {
+        try await fs.remove(atPath: proxy)
+        return nil
+    }
+
+    public var sessionEnvironment: (any SessionEnvironment)? {
         nil
     }
 
@@ -300,17 +391,6 @@ extension Platform {
         }
         // With a system prefix?
         return ["/usr", "/opt", "/bin"].contains { path.starts(with: $0) }
-    }
-
-#elseif os(Windows)
-
-    // On Windows, swiftly's own installer puts swiftly.exe in place, so there's nothing to move.
-    public func installSwiftlyBin(_: SwiftlyCoreContext) async throws {}
-
-    // Proxies on Windows are stub executables rather than links to swiftly, so there's no
-    // swiftly binary for them to point at yet.
-    public func findSwiftlyBin(_: SwiftlyCoreContext) async throws -> FilePath? {
-        nil
     }
 
 #endif

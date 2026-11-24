@@ -77,7 +77,13 @@ struct SelfUninstall: SwiftlyCommand {
             profilePaths.append(userHome / ".config/fish/conf.d/swiftly.fish")
         }
 
-        await ctx.print("Cleaning up shell profile files...")
+        // Platforms without a shell profile undo their setup for new sessions at the end instead.
+        let session = Swiftly.currentPlatform.sessionEnvironment
+        if session != nil {
+            profilePaths = []
+        } else {
+            await ctx.print("Cleaning up shell profile files...")
+        }
 
         // Remove swiftly source lines from shell profiles
         for path in profilePaths where try await fs.exists(atPath: path) {
@@ -104,18 +110,19 @@ struct SelfUninstall: SwiftlyCommand {
             await ctx.print("--------------------------")
         }
         let swiftlyBinary = swiftlyBin / "swiftly"
+        // Files that couldn't be deleted yet, such as swiftly itself while it runs on Windows.
+        var leftovers: [FilePath] = []
         if try await fs.exists(atPath: swiftlyBin) {
             let entries = try await fs.ls(atPath: swiftlyBin)
             for entry in entries {
                 let fullPath = swiftlyBin / entry
                 guard try await fs.exists(atPath: fullPath) else { continue }
-                if try await fs.isSymLink(atPath: fullPath) {
-                    let dest = try await fs.readlink(atPath: fullPath)
-                    if dest == swiftlyBinary {
-                        if verbose {
-                            await ctx.print("Removing symlink: \(fullPath) -> \(dest)")
-                        }
-                        try await fs.remove(atPath: fullPath)
+                if !isSwiftlyExecutable(entry), try await Swiftly.currentPlatform.isProxy(ctx, fullPath, to: swiftlyBinary) {
+                    if verbose {
+                        await ctx.print("Removing proxy: \(fullPath) -> \(swiftlyBinary)")
+                    }
+                    if let leftover = try await Swiftly.currentPlatform.removeFromBinDir(ctx, fullPath) {
+                        leftovers.append(leftover)
                     }
                 }
             }
@@ -125,7 +132,9 @@ struct SelfUninstall: SwiftlyCommand {
             if verbose {
                 await ctx.print("Swiftly binary found at \(swiftlyBinary), removing it...")
             }
-            try await fs.remove(atPath: swiftlyBin / "swiftly")
+            if let leftover = try await Swiftly.currentPlatform.removeFromBinDir(ctx, swiftlyBinary) {
+                leftovers.append(leftover)
+            }
         }
 
         let entries = try await fs.ls(atPath: swiftlyBin)
@@ -194,6 +203,15 @@ struct SelfUninstall: SwiftlyCommand {
             }
             try await fs.remove(atPath: swiftlyHome)
         }
+
+        if !leftovers.isEmpty {
+            await ctx.print("""
+            These files are still in use and will be deleted later: \(leftovers.map(\.string).joined(separator: ", "))
+            """)
+        }
+
+        // Last, once swiftly's files are gone, so that a failure above leaves a working installation.
+        try await session?.tearDown(ctx, verbose: verbose)
 
         await ctx.print("Swiftly is successfully uninstalled.")
     }

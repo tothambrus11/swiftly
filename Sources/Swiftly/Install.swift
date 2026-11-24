@@ -165,17 +165,14 @@ struct Install: SwiftlyCommand {
                     "Toolchain \(version) could not be located in \(toolchainBinDir). You can try `swiftly uninstall \(version)` to uninstall it and then `swiftly install \(version)` to install it again."
                 )
             }
-            let toolchainBinDirContents = try await fs.ls(atPath: toolchainBinDir)
+            let toolchainBinDirContents = try await Swiftly.currentPlatform.proxyCandidates(fs.ls(atPath: toolchainBinDir))
 
             var existingProxies: [String] = []
 
             for bin in swiftlyBinDirContents {
-                do {
-                    let linkTarget = try await fs.readlink(atPath: swiftlyBinDir / bin)
-                    if linkTarget == proxyTo {
-                        existingProxies.append(bin)
-                    }
-                } catch { continue }
+                if try await Swiftly.currentPlatform.isProxy(ctx, swiftlyBinDir / bin, to: proxyTo) {
+                    existingProxies.append(bin)
+                }
             }
 
             let overwrite = Set(toolchainBinDirContents).subtracting(existingProxies).intersection(
@@ -204,10 +201,10 @@ struct Install: SwiftlyCommand {
                 let proxy = Swiftly.currentPlatform.swiftlyBinDir(ctx) / p
 
                 if try await fs.exists(atPath: proxy) {
-                    try await fs.remove(atPath: proxy)
+                    _ = try await Swiftly.currentPlatform.removeFromBinDir(ctx, proxy)
                 }
 
-                try await fs.symlink(atPath: proxy, linkPath: proxyTo)
+                try await Swiftly.currentPlatform.createProxy(ctx, at: proxy, to: proxyTo)
 
                 pathChanged = true
             }
@@ -292,13 +289,7 @@ struct Install: SwiftlyCommand {
         let tmpFile = fs.mktemp(ext: ".\(Swiftly.currentPlatform.toolchainFileExtension)")
         try await fs.create(file: tmpFile, contents: nil)
         return try await fs.withTemporary(files: tmpFile) {
-            var platformString = config.platform.name
-            var platformFullString = config.platform.nameFull
-
-#if !os(macOS) && arch(arm64)
-            platformString += "-aarch64"
-            platformFullString += "-aarch64"
-#endif
+            let (platformString, platformFullString) = Swiftly.currentPlatform.toolchainDownloadPlatform(config.platform)
 
             let category: String
             switch version {

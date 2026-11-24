@@ -382,6 +382,8 @@ extension SwiftlyWebsiteAPI.Components.Schemas.Architecture {
         SwiftlyWebsiteAPI.Components.Schemas.KnownArchitecture.x8664)
     static let aarch64: SwiftlyWebsiteAPI.Components.Schemas.Architecture = .init(
         SwiftlyWebsiteAPI.Components.Schemas.KnownArchitecture.aarch64)
+    static let arm64: SwiftlyWebsiteAPI.Components.Schemas.Architecture = .init(
+        SwiftlyWebsiteAPI.Components.Schemas.KnownArchitecture.arm64)
 }
 
 extension SwiftlyWebsiteAPI.Components.Schemas.Platform {
@@ -419,7 +421,7 @@ extension SwiftlyWebsiteAPI.Components.Schemas.Platform {
         case "CentOS 7":
             PlatformDefinition(name: "centos7", nameFull: "centos7", namePretty: "CentOS 7")
         case "Windows 10":
-            PlatformDefinition(name: "win10", nameFull: "windows10", namePretty: "Windows 10")
+            PlatformDefinition.windows10
         case "Ubuntu 22.04":
             PlatformDefinition.ubuntu2204
         case "Red Hat Universal Base Image 9":
@@ -540,7 +542,13 @@ public struct SwiftlyHTTPClient: Sendable {
                     return nil
                 }
 
-                guard case let archs = swiftOrgPlatform.archs, archs.contains(arch) else {
+#if os(Windows)
+                // swift.org lists Windows toolchains for ARM64 as "arm64" rather than "aarch64".
+                let names = arch == .aarch64 ? [arch, .arm64] : [arch]
+#else
+                let names = [arch]
+#endif
+                guard case let archs = swiftOrgPlatform.archs, archs.contains(where: names.contains) else {
                     return nil
                 }
             }
@@ -603,6 +611,8 @@ public struct SwiftlyHTTPClient: Sendable {
             .init(.amazonlinux2)
         case PlatformDefinition.macOS.name:
             .init(.macos)
+        case PlatformDefinition.windows10.name:
+            .init(.windows10)
         default:
             throw SwiftlyError(
                 message: "No snapshot toolchains available for platform \(platform.name)")
@@ -627,6 +637,12 @@ public struct SwiftlyHTTPClient: Sendable {
         }
 
         let arch = a ?? cpuArch.value2
+#if os(Windows)
+        // swift.org lists Windows snapshots for ARM64 as "arm64" rather than "aarch64".
+        let aarch64Snapshots = devToolchains.aarch64 ?? devToolchains.arm64
+#else
+        let aarch64Snapshots = devToolchains.aarch64
+#endif
 
         // These are the available snapshots for the branch, platform, and architecture
         let swiftOrgSnapshots =
@@ -635,7 +651,7 @@ public struct SwiftlyHTTPClient: Sendable {
             devToolchains.universal
                 ?? [SwiftlyWebsiteAPI.Components.Schemas.DevToolchainForArch]()
         } else if arch == "aarch64" {
-            devToolchains.aarch64
+            aarch64Snapshots
                 ?? [SwiftlyWebsiteAPI.Components.Schemas.DevToolchainForArch]()
         } else if arch == "x86_64" {
             devToolchains.x8664 ?? [SwiftlyWebsiteAPI.Components.Schemas.DevToolchainForArch]()

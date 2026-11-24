@@ -145,6 +145,10 @@ extension SwiftlyCommand {
     }
 
     public static func handlePathChange(_ ctx: SwiftlyCoreContext) async throws {
+        // Only shells set up through a profile cache command locations (see `hash -r` below).
+        guard Swiftly.currentPlatform.sessionEnvironment == nil else {
+            return
+        }
         let shell =
             if let s = ProcessInfo.processInfo.environment["SHELL"]
         {

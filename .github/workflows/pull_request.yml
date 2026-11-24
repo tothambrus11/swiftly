@@ -94,6 +94,8 @@ jobs:
         run: swift build -c release --product swiftly --static-swift-stdlib
       - name: Build the tests
         run: swift build --build-tests
+      - name: Run the tests that pass on Windows so far
+        run: swift test --skip-build --filter "PlatformTests/(toolchainDownloadPlatform|arm64SnapshotsOfWindows)"
 
   releasebuildcheck:
     name: Release Build Check / Linux
