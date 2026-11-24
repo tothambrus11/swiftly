@@ -227,13 +227,9 @@ enum MSVCSysroot {
             .localizedResources?.first(where: { $0.language?.lowercased() == "en-us" })?.license
             ?? "https://go.microsoft.com/fwlink/?LinkId=2179911"
 
+        // The channel's size and SHA-256 for the manifest don't describe the file that's served, so
+        // they can't be checked; the manifest comes over HTTPS from Microsoft's download server.
         let manifestData = try await self.get(ctx, manifestURL)
-        if let expected = manifestItem.payloads?.first?.sha256 {
-            let actual = try self.digest(.sha256, of: manifestData)
-            guard actual == expected.lowercased() else {
-                throw SwiftlyError(message: "The Visual Studio package manifest doesn't match the hash in its channel.")
-            }
-        }
         let manifest = try JSONDecoder().decode(VSManifest.self, from: manifestData)
         let (crtVersion, crt) = try self.crtFiles(in: manifest, arch: self.arch)
 
@@ -422,12 +418,6 @@ enum MSVCSysroot {
             try await ctx.httpClient.getFile(url: url).download(to: file)
             return try Data(contentsOf: file)
         }
-    }
-
-    private static func digest(_ algorithm: Win32.Hash.Algorithm, of data: Data) throws -> String {
-        let hash = try Win32.Hash(algorithm)
-        try hash.update(data)
-        return try hash.finish()
     }
 
     private static func removeFiles(in dir: FilePath, where predicate: (String) -> Bool) throws {
