@@ -97,6 +97,15 @@ public protocol HTTPRequestExecutor: Sendable {
         -> OpenAPIRuntime.HTTPBody
     func getSwiftToolchainFileSignature(_ toolchainFile: ToolchainFile) async throws
         -> OpenAPIRuntime.HTTPBody
+    /// Downloads a file from outside swift.org, such as the Microsoft packages that the Windows
+    /// platform downloads when Visual Studio isn't installed.
+    func getFile(url: URL) async throws -> OpenAPIRuntime.HTTPBody
+}
+
+extension HTTPRequestExecutor {
+    public func getFile(url: URL) async throws -> OpenAPIRuntime.HTTPBody {
+        throw SwiftlyError(message: "Downloading \(url) isn't supported.")
+    }
 }
 
 struct SwiftlyUserAgentMiddleware: ClientMiddleware {
@@ -163,44 +172,63 @@ public final class HTTPRequestExecutorImpl: HTTPRequestExecutor {
     }
 #endif
 
-    private func websiteClient() throws -> SwiftlyWebsiteAPI.Client {
-        let swiftlyUserAgent = SwiftlyUserAgentMiddleware()
-        let transport: ClientTransport
-
+    private func transport() -> ClientTransport {
 #if os(Windows)
-        transport = WinHttpTransport()
+        WinHttpTransport()
 #else
-        let config = AsyncHTTPClientTransport.Configuration(
+        AsyncHTTPClientTransport(configuration: AsyncHTTPClientTransport.Configuration(
             client: self.httpClient, timeout: .seconds(30)
-        )
-        transport = AsyncHTTPClientTransport(configuration: config)
+        ))
 #endif
+    }
 
-        return Client(
+    private func websiteClient() throws -> SwiftlyWebsiteAPI.Client {
+        Client(
             serverURL: try SwiftlyWebsiteAPI.Servers.productionURL(),
-            transport: transport,
-            middlewares: [swiftlyUserAgent]
+            transport: self.transport(),
+            middlewares: [SwiftlyUserAgentMiddleware()]
         )
     }
 
     private func downloadClient(baseURL: URL) throws -> SwiftlyDownloadAPI.Client {
-        let swiftlyUserAgent = SwiftlyUserAgentMiddleware()
-        let transport: ClientTransport
-
-#if os(Windows)
-        transport = WinHttpTransport()
-#else
-        let config = AsyncHTTPClientTransport.Configuration(
-            client: self.httpClient, timeout: .seconds(30)
-        )
-        transport = AsyncHTTPClientTransport(configuration: config)
-#endif
-
-        return SwiftlyDownloadAPI.Client(
+        SwiftlyDownloadAPI.Client(
             serverURL: baseURL,
-            transport: transport,
-            middlewares: [swiftlyUserAgent]
+            transport: self.transport(),
+            middlewares: [SwiftlyUserAgentMiddleware()]
         )
+    }
+
+    public func getFile(url: URL) async throws -> OpenAPIRuntime.HTTPBody {
+        var current = url
+        // The transports don't all follow redirects (WinHTTP's doesn't), and Microsoft's URLs
+        // (aka.ms, go.microsoft.com) are redirects.
+        for _ in 0..<10 {
+            guard current.scheme == "https", let host = current.host(percentEncoded: false), let baseURL = URL(string: "https://\(host)") else {
+                throw SwiftlyError(message: "Refusing to download \(current): only HTTPS URLs are supported.")
+            }
+            var path = current.path(percentEncoded: true)
+            if let query = current.query(percentEncoded: true) {
+                path += "?" + query
+            }
+            var request = HTTPRequest(method: .get, scheme: nil, authority: nil, path: path)
+            request.headerFields[.userAgent] = "swiftly/\(SwiftlyCore.version)"
+            let (response, body) = try await self.transport().send(request, body: nil, baseURL: baseURL, operationID: "getFile")
+            if [301, 302, 303, 307, 308].contains(response.status.code),
+               let location = response.headerFields[.location],
+               let next = URL(string: location, relativeTo: current)?.absoluteURL
+            {
+                current = next
+                continue
+            }
+            if response.status == .notFound {
+                throw DownloadNotFoundError(url: current)
+            }
+            guard response.status == .ok, let body else {
+                throw SwiftlyError(message: "Downloading \(current) failed: HTTP \(response.status.code)")
+            }
+            return body
+        }
+        throw SwiftlyError(message: "Downloading \(url) failed: too many redirects")
     }
 
     public func getCurrentSwiftlyRelease() async throws
@@ -688,6 +716,10 @@ public struct SwiftlyHTTPClient: Sendable {
         -> OpenAPIRuntime.HTTPBody
     {
         try await self.httpRequestExecutor.getSwiftToolchainFileSignature(toolchainFile)
+    }
+
+    public func getFile(url: URL) async throws -> OpenAPIRuntime.HTTPBody {
+        try await self.httpRequestExecutor.getFile(url: url)
     }
 }
 
