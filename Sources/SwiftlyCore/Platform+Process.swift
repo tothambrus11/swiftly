@@ -56,14 +56,13 @@ extension Platform {
             )
         }
 
-        // TODO: Handle Git Bash and other shells, which pass the variable as PATH rather than Path.
-        let path = ProcessInfo.processInfo.environment["Path"] ?? ""
+        // Variable names are case-insensitive on Windows: Git Bash, for one, passes PATH rather than Path.
+        let path = ProcessInfo.processInfo.environment.first { $0.key.caseInsensitiveCompare("Path") == .orderedSame }?.value ?? ""
         var pathComponents = path.split(separator: ";").map { String($0) }
 
         // The toolchain goes to the beginning of the Path. Entries compare as FilePath, which treats
         // forward and backward slashes alike and drops a trailing one.
         pathComponents.removeAll(where: { FilePath($0) == tcPath })
-        // TODO: add runtimes path too after toolchain path. Can compute or maybe add it from other places later
         pathComponents = [tcPath.string] + pathComponents
 
         // Remove swiftly bin directory from the Path entirely
@@ -71,9 +70,6 @@ extension Platform {
         pathComponents.removeAll(where: { FilePath($0) == swiftlyBinDir })
 
         environment = environment.updating(["Path": String(pathComponents.joined(separator: ";"))])
-        // TEMP: show the Path the toolchain command gets
-        await ctx.printError("swiftly: Path=\(pathComponents.joined(separator: ";"))")
-
         environment = try await self.updateEnvironmentWithToolchain(ctx, environment, toolchain, path: String(pathComponents.joined(separator: ";")))
 
         return environment

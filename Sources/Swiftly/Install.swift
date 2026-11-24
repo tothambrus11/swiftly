@@ -296,7 +296,15 @@ struct Install: SwiftlyCommand {
             var platformString = config.platform.name
             var platformFullString = config.platform.nameFull
 
-#if !os(macOS) && arch(arm64)
+#if os(Windows)
+            // swift.org names the Windows directory like the file:
+            // swift-6.4.3-release/windows10-arm64/swift-6.4.3-RELEASE/swift-6.4.3-RELEASE-windows10-arm64.exe
+            platformString = config.platform.nameFull
+#if arch(arm64)
+            platformString += "-arm64"
+            platformFullString += "-arm64"
+#endif
+#elseif !os(macOS) && arch(arm64)
             platformString += "-aarch64"
             platformFullString += "-aarch64"
 #endif

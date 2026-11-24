@@ -410,6 +410,8 @@ extension SwiftlyWebsiteAPI.Components.Schemas.Architecture {
         SwiftlyWebsiteAPI.Components.Schemas.KnownArchitecture.x8664)
     static let aarch64: SwiftlyWebsiteAPI.Components.Schemas.Architecture = .init(
         SwiftlyWebsiteAPI.Components.Schemas.KnownArchitecture.aarch64)
+    static let arm64: SwiftlyWebsiteAPI.Components.Schemas.Architecture = .init(
+        SwiftlyWebsiteAPI.Components.Schemas.KnownArchitecture.arm64)
 }
 
 extension SwiftlyWebsiteAPI.Components.Schemas.Platform {
@@ -568,7 +570,9 @@ public struct SwiftlyHTTPClient: Sendable {
                     return nil
                 }
 
-                guard case let archs = swiftOrgPlatform.archs, archs.contains(arch) else {
+                // swift.org lists Windows toolchains for ARM64 as "arm64" rather than "aarch64".
+                let names = arch == .aarch64 ? [arch, .arm64] : [arch]
+                guard case let archs = swiftOrgPlatform.archs, archs.contains(where: names.contains) else {
                     return nil
                 }
             }
@@ -631,6 +635,8 @@ public struct SwiftlyHTTPClient: Sendable {
             .init(.amazonlinux2)
         case PlatformDefinition.macOS.name:
             .init(.macos)
+        case "win10":
+            .init(.windows10)
         default:
             throw SwiftlyError(
                 message: "No snapshot toolchains available for platform \(platform.name)")
