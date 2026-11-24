@@ -373,6 +373,208 @@ import WinSDK
         #expect(try environment.read("SWIFTLY_BIN_DIR") != nil)
     }
 
+    // MARK: MSVC sysroot
+
+    static let vsManifest = """
+    {"manifestVersion":"1.1","packages":[
+      {"id":"Microsoft.VisualCpp.CRT.Headers","version":"17.14.36015.10","type":"Component",
+       "dependencies":{"Microsoft.VC.14.44.17.14.CRT.Headers.base":"[17.14,18.0)","Microsoft.VisualCpp.Redist":{"version":"[1.0,)"}}},
+      {"id":"Microsoft.VC.14.44.17.14.CRT.Headers.base","version":"14.44.35220","type":"Vsix","payloads":[
+        {"fileName":"payload.vsix","sha256":"AAAA0000000000000000000000000000000000000000000000000000000000AA","size":2000000,
+         "url":"https://download.visualstudio.microsoft.com/download/pr/1/0000000000000000000000000000000000000000000000000000000000000001/payload.vsix"}]},
+      {"id":"Microsoft.VC.14.44.17.14.CRT.x64.Store.base","version":"14.44.35220","type":"Vsix","payloads":[
+        {"fileName":"payload.vsix","size":3000000,
+         "url":"https://download.visualstudio.microsoft.com/download/pr/2/BBBB000000000000000000000000000000000000000000000000000000000002/payload.vsix"}]},
+      {"id":"Microsoft.VC.14.44.17.14.CRT.x64.Desktop.base","version":"14.44.35220","type":"Vsix","payloads":[
+        {"fileName":"payload.vsix","sha256":"cccc000000000000000000000000000000000000000000000000000000000003",
+         "url":"https://download.visualstudio.microsoft.com/download/pr/3/x/payload.vsix"}]},
+      {"id":"Microsoft.VC.14.45.17.15.CRT.Headers.base","version":"14.45.35000","type":"Vsix","payloads":[{"url":"https://example.invalid/0000000000000000000000000000000000000000000000000000000000000004/p.vsix"}]},
+      {"id":"Microsoft.VC.14.44.17.14.CRT.ARM64.Store.base","version":"14.44.35220","type":"Vsix","chip":"arm64","payloads":[]}
+    ]}
+    """
+
+    @Test func picksDefaultCRTPackagesFromVisualStudioManifest() throws {
+        let manifest = try JSONDecoder().decode(VSManifest.self, from: Data(Self.vsManifest.utf8))
+        let (version, files) = try MSVCSysroot.crtFiles(in: manifest, arch: "x64")
+        #expect(version == "14.44.35220")
+        #expect(files.map(\.name) == [
+            "Microsoft.VC.14.44.17.14.CRT.Headers.base", "Microsoft.VC.14.44.17.14.CRT.x64.Store.base", "Microsoft.VC.14.44.17.14.CRT.x64.Desktop.base",
+        ])
+        // The hash comes from the payload, or else from its URL; either way lowercase.
+        #expect(files.map(\.sha256) == [
+            "aaaa0000000000000000000000000000000000000000000000000000000000aa",
+            "bbbb000000000000000000000000000000000000000000000000000000000002",
+            "cccc000000000000000000000000000000000000000000000000000000000003",
+        ])
+        // There's no arm64 runtime with a payload in this excerpt.
+        #expect(throws: SwiftlyError.self) { try MSVCSysroot.crtFiles(in: manifest, arch: "arm64") }
+    }
+
+    @Test func picksNewestStableVersion() throws {
+        #expect(MSVCSysroot.newestStableVersion(["10.0.22621.3233", "10.0.26100.9457", "10.0.26100.10000-preview", "10.0.9200.1"]) == "10.0.26100.9457")
+        #expect(MSVCSysroot.newestStableVersion([]) == nil)
+        #expect(MSVCSysroot.compareVersions("14.9", "14.44"))
+        #expect(!MSVCSysroot.compareVersions("14.44.35207", "14.44"))
+    }
+
+    @Test func escapesClangConfigPaths() throws {
+        #expect(MSVCSysroot.quoteConfigArgument(#"C:\Users\A B\swiftly"#) == #""C:\\Users\\A B\\swiftly""#)
+        #expect(MSVCSysroot.quoteConfigArgument(#"C:\a"b"#) == #""C:\\a\"b""#)
+
+        let config = MSVCSysroot.clangConfig(
+            sysroot: FilePath(#"C:\Users\me\AppData\Local\swiftly\msvc-sysroot-x64"#),
+            overlay: FilePath(#"C:\Users\me\AppData\Local\swiftly\toolchains\6.4.3\msvc-modulemaps.yaml"#),
+            delayLoad: []
+        )
+        let lines = config.split(separator: "\n").map(String.init)
+        #expect(lines.dropFirst() == [
+            "-fuse-ld=lld",
+            #"-Xmicrosoft-windows-sys-root "C:\\Users\\me\\AppData\\Local\\swiftly\\msvc-sysroot-x64""#,
+            #"-ivfsoverlay "C:\\Users\\me\\AppData\\Local\\swiftly\\toolchains\\6.4.3\\msvc-modulemaps.yaml""#,
+        ])
+        #expect(lines[0].hasPrefix("#"))
+    }
+
+    @Test func delayLoadsMissingDLLsInClangConfig() throws {
+        let config = MSVCSysroot.clangConfig(sysroot: FilePath(#"C:\s"#), overlay: FilePath(#"C:\o.yaml"#), delayLoad: ["swift_Builtin_float.dll", "swift_Volatile.dll"])
+        #expect(config.hasSuffix("""
+        --start-no-unused-arguments
+        -Wl,/delayload:swift_Builtin_float.dll
+        -Wl,/delayload:swift_Volatile.dll
+        -Wl,delayimp.lib
+        --end-no-unused-arguments
+
+        """))
+    }
+
+    @Test func placesModulemapsNextToTheirHeaders() throws {
+        let include = FilePath(#"C:\s\Windows Kits\10\Include\10.0.26100.0"#)
+        let vc = FilePath(#"C:\s\VC\Tools\MSVC\14.44.35207\include"#)
+        let files = ["Info.plist", "ucrt.modulemap", "vcruntime.apinotes", "vcruntime.modulemap", "winsdk.modulemap", "winsdk_shared.modulemap"]
+        let placements = MSVCSysroot.modulemapPlacements(files, include: include, vcInclude: vc)
+        #expect(placements.map(\.file) == ["ucrt.modulemap", "vcruntime.apinotes", "vcruntime.modulemap", "winsdk.modulemap", "winsdk_shared.modulemap"])
+        #expect(placements.map(\.destination) == [
+            include / "ucrt" / "module.modulemap",
+            vc / "vcruntime.apinotes",
+            vc / "module.modulemap",
+            include / "um" / "module.modulemap",
+            include / "shared" / "module.modulemap",
+        ])
+    }
+
+    @Test func writesVFSOverlay() throws {
+        let yaml = try MSVCSysroot.overlayYAML([
+            (virtualPath: FilePath(#"C:\s\inc\ucrt\module.modulemap"#), realPath: FilePath(#"C:\t\ucrt.modulemap"#)),
+            (virtualPath: FilePath(#"C:\s\inc\ucrt\ucrt.apinotes"#), realPath: FilePath(#"C:\t\ucrt.apinotes"#)),
+            (virtualPath: FilePath(#"C:\s\vc\module.modulemap"#), realPath: FilePath(#"C:\t\vcruntime.modulemap"#)),
+        ])
+        let json = try #require(JSONSerialization.jsonObject(with: Data(yaml.utf8)) as? [String: Any])
+        #expect(json["version"] as? Int == 0)
+        #expect(json["case-sensitive"] as? String == "false")
+        let roots = try #require(json["roots"] as? [[String: Any]])
+        #expect(roots.map { $0["name"] as? String } == [#"C:\s\inc\ucrt"#, #"C:\s\vc"#])
+        let ucrt = try #require(roots[0]["contents"] as? [[String: Any]])
+        #expect(ucrt.map { $0["name"] as? String } == ["module.modulemap", "ucrt.apinotes"])
+        #expect(ucrt[0]["external-contents"] as? String == #"C:\t\ucrt.modulemap"#)
+    }
+
+    @Test func showsTheLicenseTerms() {
+        let terms = MSVCSysroot.Terms(msvc: MSVCSysroot.buildToolsLicense, windowsSDK: MSVCSysroot.windowsSDKLicense, identifier: "0123456789ab")
+        let text = MSVCSysroot.licenseText(terms)
+        #expect(text.contains("https://go.microsoft.com/fwlink/?LinkId=2179911"))
+        #expect(text.contains("https://aka.ms/WinSDKLicenseURL"))
+        #expect(text.contains("0123456789ab"))
+        // Only the Build Tools' and the SDK's terms; who they cover is Microsoft's to say.
+        #expect(!text.contains("LinkId=2179811"))
+        #expect(text.contains(MSVCSysroot.eligibility))
+        #expect(text.contains("doesn't support sharing"))
+    }
+
+    @Test func identifiesTermsByTheirText() throws {
+        let page = "<html><head><script>var nonce = 1;</script><style>p {}</style></head><body><p>Terms   of\nuse</p></body></html>"
+        let other = "<html><head><script>var nonce = 2;</script></head><body><p>Terms of use</p></body></html>"
+        #expect(MSVCSysroot.normalizedText(page) == "Terms of use")
+        #expect(try MSVCSysroot.identifier(of: MSVCSysroot.normalizedText(page)) == MSVCSysroot.identifier(of: MSVCSysroot.normalizedText(other)))
+        #expect(try MSVCSysroot.identifier(of: "Terms of use") != MSVCSysroot.identifier(of: "Terms of use, changed"))
+    }
+
+    @Test func acceptsTheLicenseOnlyExplicitly() async throws {
+        let terms = MSVCSysroot.Terms(msvc: "m", windowsSDK: "s", identifier: "aaaaaaaaaaaa")
+        // No flag, and no input at the prompt: declined.
+        var ctx = SwiftlyTests.ctx
+        ctx.inputProvider = TestInputProvider(lines: [])
+        ctx.outputHandler = TestOutputHandler(quiet: true)
+        #expect(try await MSVCSysroot.askToAccept(ctx, terms, previous: nil) == nil)
+        ctx.inputProvider = TestInputProvider(lines: ["maybe", "y"])
+        #expect(try await MSVCSysroot.askToAccept(ctx, terms, previous: nil) == "prompt")
+        ctx.inputProvider = TestInputProvider(lines: ["n"])
+        #expect(try await MSVCSysroot.askToAccept(ctx, terms, previous: nil) == nil)
+        ctx.platformOptions["accept-msvc-license"] = "true"
+        #expect(try await MSVCSysroot.askToAccept(ctx, terms, previous: nil) == "--accept-msvc-license")
+        #expect(try await MSVCSysroot.askToAccept(ctx, terms, previous: terms) == "--accept-msvc-license")
+        // Changed terms aren't accepted non-interactively.
+        let changed = MSVCSysroot.Terms(msvc: "m", windowsSDK: "s", identifier: "bbbbbbbbbbbb")
+        await #expect(throws: SwiftlyError.self) { try await MSVCSysroot.askToAccept(ctx, changed, previous: terms) }
+    }
+
+    @Test func rejectsUnknownMSVCModes() throws {
+        var ctx = SwiftlyTests.ctx
+        ctx.platformOptions["msvc"] = "portable"
+        #expect(try MSVCSysroot.requestedMode(ctx) == .portable)
+        ctx.platformOptions["msvc"] = "install-build-tools"
+        #expect(try MSVCSysroot.requestedMode(ctx) == .installBuildTools)
+        ctx.platformOptions["msvc"] = "sysroot"
+        #expect(throws: SwiftlyError.self) { try MSVCSysroot.requestedMode(ctx) }
+    }
+
+    @Test func runsMicrosoftsBuildToolsInstallerInteractively() {
+        let command = MSVCSysroot.buildToolsCommand
+        #expect(command.starts(with: ["winget", "install", "--id", "Microsoft.VisualStudio.2022.BuildTools"]))
+        #expect(command.contains("--interactive"))
+        #expect(!command.contains("--accept-package-agreements"))
+        #expect(command.last?.contains("--add Microsoft.VisualStudio.Component.VC.Tools.x86.x64") == true)
+    }
+
+    /// Headers a modulemap names (main's ucrt.modulemap has SwiftUCRT.h) go next to it.
+    @Test func placesTheHeadersTheModulemapsName() {
+        let include = FilePath(#"C:\s\Include\10.0.26100.0"#)
+        let modulemaps = MSVCSysroot.modulemapPlacements(["ucrt.modulemap", "SwiftUCRT.h", "winsdk.modulemap", "um.modulemap"], include: include, vcInclude: FilePath(#"C:\s\VC\include"#))
+        #expect(modulemaps.contains { $0.file == "winsdk.modulemap" && $0.destination == include / "module.modulemap" })
+        #expect(modulemaps.contains { $0.file == "um.modulemap" && $0.destination == include / "um" / "module.modulemap" })
+        let headers = MSVCSysroot.referencedHeaderPlacements(modulemaps, files: ["ucrt.modulemap", "SwiftUCRT.h"]) { file in
+            file == "ucrt.modulemap" ? "module ucrt [system] {\n  header \"SwiftUCRT.h\"\n}\n" : ""
+        }
+        #expect(headers.map(\.file) == ["SwiftUCRT.h"])
+        #expect(headers.first?.destination == include / "ucrt" / "SwiftUCRT.h")
+    }
+
+    @Test func configuresClangAndClangCLForBothVendors() {
+        let names = MSVCSysroot.configFiles.map(\.name)
+        let cpu = MSVCSysroot.arch == "arm64" ? "aarch64" : "x86_64"
+        #expect(names == ["\(cpu)-unknown-windows-msvc.cfg", "\(cpu)-unknown-windows-msvc-clang-cl.cfg", "\(cpu)-pc-windows-msvc.cfg", "\(cpu)-pc-windows-msvc-clang-cl.cfg"])
+        let clangCL = MSVCSysroot.clangCLConfig(sysroot: FilePath(#"C:\s"#), extra: ["-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"])
+        #expect(clangCL.contains(#"/winsysroot "C:\\s""#))
+        #expect(clangCL.contains("/D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"))
+    }
+
+    @Test func onlyReplacesConfigFilesItWrote() throws {
+        let dir = fs.mktemp()
+        try FileManager.default.createDirectory(atPath: dir.string, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir.string) }
+        let ours = dir / "ours.cfg"
+        try Data(MSVCSysroot.clangConfig(sysroot: FilePath(#"C:\s"#), overlay: FilePath(#"C:\o.yaml"#), delayLoad: []).utf8).write(to: ours)
+        let theirs = dir / "theirs.cfg"
+        try Data("--target=x86_64-unknown-windows-msvc\n".utf8).write(to: theirs)
+        #expect(MSVCSysroot.isOurs(ours))
+        #expect(!MSVCSysroot.isOurs(theirs))
+        #expect(!MSVCSysroot.isOurs(dir / "missing.cfg"))
+    }
+
+    @Test func writesTheConfigForThisTargetOnly() {
+        let config = MSVCSysroot.clangConfig(sysroot: FilePath(#"C:\s"#), overlay: FilePath(#"C:\o.yaml"#), delayLoad: [], extra: ["-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"])
+        #expect(config.split(separator: "\n").last == "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH")
+    }
+
     // MARK: Authenticode
 
     @Test func authenticodeActionIsGenericVerifyV2() {

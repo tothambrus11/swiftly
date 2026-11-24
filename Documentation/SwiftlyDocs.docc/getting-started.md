@@ -84,6 +84,17 @@ On Windows, swiftly installs each toolchain from the swift.org installer into it
 As with the swift.org installer, Swift needs Visual Studio or its Build Tools, with the C++ tools and a Windows SDK, to link programs.
 If they're missing, swiftly still installs the toolchain and prints the command that installs them.
 
+Without Visual Studio, `swiftly install --msvc=install-build-tools` runs Microsoft's installer for the Visual Studio Build Tools with the components Swift needs; Microsoft's installer shows Microsoft's license terms.
+
+As a prototype, `swiftly install --msvc=portable` (or `init --msvc=portable`, which applies at the first toolchain install) can instead download just the headers and libraries of the Microsoft C runtime and the Windows SDK that Swift needs, directly from Microsoft, into `%LOCALAPPDATA%\swiftly\msvc-sysroot-<arch>`, which your toolchains then share.
+These are Microsoft software under the Visual Studio Build Tools' and the Windows SDK's license terms, which swiftly shows (it fetches the license documents and Microsoft's package metadata first, and the packages only once you accept). Whether the terms cover your use is between you and Microsoft; see [Microsoft's description](https://visualstudio.microsoft.com/license-terms/).
+swiftly asks you to accept them; `--assume-yes` doesn't accept them for you, `--accept-msvc-license` (or `SWIFTLY_ACCEPT_MSVC_LICENSE=1`) does, though not terms that changed since you accepted them: those need an answer at the prompt, or `SWIFTLY_ACCEPT_MSVC_LICENSE=<identifier>` with the identifier swiftly shows.
+swiftly doesn't support sharing the sysroot: each user and machine accepts and downloads it (so it isn't for CI caches or a network `SWIFTLY_HOME_DIR`).
+Each toolchain gets clang and clang-cl configuration files for this machine's target (both the `unknown` and the `pc` vendor), so building for other targets isn't affected.
+To download it again, add `--msvc-refresh`. `--msvc=visual-studio` points the toolchains back at Visual Studio, and `--msvc-remove` deletes the sysroot and swiftly's configuration of the toolchains for it.
+Its packages are checked against the hashes in Microsoft's metadata, which comes over HTTPS; their signatures aren't verified.
+With the Visual Studio 2026 STL (14.50 and later), which expects clang 22, toolchains with an older clang (Swift 6.2 to 6.4) get `_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH` defined, with a warning.
+
 Programs you build link against the Swift runtime DLLs of their toolchain. `swift run` and `swiftly run` put them on the `Path`; to start a program directly, run it with `swiftly run .\program.exe`.
 
 ## Installing toolchains through an HTTP proxy

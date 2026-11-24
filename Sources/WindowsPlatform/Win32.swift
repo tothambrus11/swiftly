@@ -117,6 +117,52 @@ enum Win32 {
         return machine == USHORT(IMAGE_FILE_MACHINE_ARM64)
     }
 
+    /// Whether `path` is on a network share: a UNC path, or a drive letter mapped to one.
+    static func isNetworkPath(_ path: FilePath) -> Bool {
+        let string = path.string
+        if string.hasPrefix(#"\\"#) || string.hasPrefix("//") {
+            return true
+        }
+        guard let root = path.root?.string else {
+            return false
+        }
+        return root.withCString(encodedAs: UTF16.self) { GetDriveTypeW($0) } == UINT(DRIVE_REMOTE)
+    }
+
+    /// The file version (major, minor, build, revision) in an executable's or DLL's version resource.
+    static func fileVersion(_ file: FilePath) -> [Int]? {
+        file.string.withCString(encodedAs: UTF16.self) { path -> [Int]? in
+            var ignored: DWORD = 0
+            let size = GetFileVersionInfoSizeW(path, &ignored)
+            guard size > 0 else { return nil }
+            var data = [UInt8](repeating: 0, count: Int(size))
+            guard GetFileVersionInfoW(path, 0, size, &data) else { return nil }
+            var info: UnsafeMutableRawPointer?
+            var length: UINT = 0
+            let found = "\\".withCString(encodedAs: UTF16.self) { VerQueryValueW(&data, $0, &info, &length) }
+            guard found, let info, length >= UINT(MemoryLayout<VS_FIXEDFILEINFO>.size) else { return nil }
+            let fixed = info.load(as: VS_FIXEDFILEINFO.self)
+            return [Int(fixed.dwFileVersionMS >> 16), Int(fixed.dwFileVersionMS & 0xFFFF), Int(fixed.dwFileVersionLS >> 16), Int(fixed.dwFileVersionLS & 0xFFFF)]
+        }
+    }
+
+    /// Runs `program` (found on Path) with this terminal's input and output, and waits for it.
+    static func runProgram(_ program: String, _ arguments: [String]) async throws {
+        let path = ProcessInfo.processInfo.environment.first { $0.key.caseInsensitiveCompare("Path") == .orderedSame }?.value ?? ""
+        let name = program.lowercased().hasSuffix(".exe") ? program : program + ".exe"
+        guard let executable = path.split(separator: ";").map({ FilePath(String($0)) / name }).first(where: { FileManager.default.fileExists(atPath: $0.string) }) else {
+            throw SwiftlyError(message: "\(name) isn't on Path.")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable.string)
+        process.arguments = arguments
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw SwiftlyError(message: "\(name) exited with \(process.terminationStatus).")
+        }
+    }
+
     /// The System32 directory, where Windows' own tools are.
     static var system32: FilePath {
         var buffer = [WCHAR](repeating: 0, count: Int(MAX_PATH) + 1)

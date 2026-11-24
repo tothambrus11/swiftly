@@ -86,9 +86,13 @@ public struct Windows: Platform {
         // which the next install empties.
         try await Self.swap(ctx, unpacked, into: toolchainDir, aside: Windows.leftoverName(for: toolchainDir, stamp: Self.newStamp(), kind: "old"))
 
-        if ctx.mockedHomeDir == nil, case let .ready(installation) = await VisualStudio.detect(),
-           let installed = WindowsToolchainLayout.read(toolchainDir)
-        {
+        guard ctx.mockedHomeDir == nil, let installed = WindowsToolchainLayout.read(toolchainDir) else {
+            return
+        }
+        let visualStudio = await VisualStudio.detect()
+        let useSysroot = try MSVCSysroot.isSelected(ctx, visualStudio: visualStudio) && MSVCSysroot.info(ctx) != nil
+        try await MSVCSysroot.configure(ctx, installed, sysroot: useSysroot ? MSVCSysroot.directory(ctx) : nil)
+        if !useSysroot, case let .ready(installation) = visualStudio {
             await self.warnAboutSTL(ctx, installation: installation, bin: installed.bin)
         }
     }
@@ -217,7 +221,8 @@ public struct Windows: Platform {
             await ctx.message("Note: this is the x64 swiftly on an ARM64 machine, so it installs x64 toolchains, which run emulated. The ARM64 swiftly installs native ones.")
         }
 #endif
-        return VisualStudio.instructions(for: await VisualStudio.detect())
+        // With --msvc=portable, set up swiftly's sysroot instead (an opt-in; see MSVCSysroot).
+        return try await MSVCSysroot.prepare(ctx, visualStudio: await VisualStudio.detect())
     }
 
     public func verifyToolchainSignature(

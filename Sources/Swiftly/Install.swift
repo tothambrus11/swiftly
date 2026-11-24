@@ -51,6 +51,24 @@ struct Install: SwiftlyCommand {
         ))
     var version: String?
 
+    @Option(help: ArgumentHelp(
+        "Windows: where toolchains get the Microsoft C runtime and Windows SDK: visual-studio (the default), install-build-tools or portable.",
+        discussion: """
+        With install-build-tools, swiftly runs Microsoft's installer for the Visual Studio Build Tools, which shows Microsoft's license terms. With portable, swiftly downloads just the headers and libraries Swift needs from Microsoft, after you accept Microsoft's license terms, into a directory that all your toolchains share. With visual-studio, toolchains that used that directory use Visual Studio again.
+        """,
+        valueName: "source"
+    ))
+    var msvc: String?
+
+    @Flag(help: "Windows: accept Microsoft's license terms for --msvc=portable without asking.")
+    var acceptMsvcLicense: Bool = false
+
+    @Flag(help: "Windows: download the Microsoft C runtime and Windows SDK for --msvc=portable again.")
+    var msvcRefresh: Bool = false
+
+    @Flag(help: "Windows: delete the Microsoft C runtime and Windows SDK that --msvc=portable downloaded, and swiftly's configuration of the toolchains for them.")
+    var msvcRemove: Bool = false
+
     @Flag(name: .shortAndLong, help: "Mark the newly installed toolchain as in-use.")
     var use: Bool = false
 
@@ -87,7 +105,7 @@ struct Install: SwiftlyCommand {
     @OptionGroup var root: GlobalOptions
 
     private enum CodingKeys: String, CodingKey {
-        case version, use, verify, postInstallFile, root, progressFile, format
+        case version, use, verify, postInstallFile, root, progressFile, format, msvc, acceptMsvcLicense, msvcRefresh, msvcRemove
     }
 
     mutating func run() async throws {
@@ -99,6 +117,11 @@ struct Install: SwiftlyCommand {
     }
 
     mutating func run(_ ctx: SwiftlyCoreContext) async throws {
+        var ctx = ctx
+        ctx.platformOptions["msvc"] = self.msvc
+        ctx.platformOptions["accept-msvc-license"] = self.acceptMsvcLicense ? "true" : nil
+        ctx.platformOptions["msvc-refresh"] = self.msvcRefresh ? "true" : nil
+        ctx.platformOptions["msvc-remove"] = self.msvcRemove ? "true" : nil
         let versionUpdateReminder = try await validateSwiftly(ctx)
         defer {
             versionUpdateReminder()
