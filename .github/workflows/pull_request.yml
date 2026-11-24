@@ -74,6 +74,27 @@ jobs:
       - name: Build and Test
         run: swift test
 
+  tests-windows:
+    name: Test / Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: windows-2025}
+          - {arch: arm64, runner: windows-11-arm}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Swift
+        shell: pwsh
+        run: ./scripts/prep-gh-action.ps1
+      - name: Build swiftly
+        run: swift build -c release --product swiftly --static-swift-stdlib
+      - name: Build the tests
+        run: swift build --build-tests
+
   releasebuildcheck:
     name: Release Build Check / Linux
     runs-on: ubuntu-latest
