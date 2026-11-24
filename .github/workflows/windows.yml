@@ -1,0 +1,48 @@
+name: Windows
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths-ignore: ['**.md', 'Documentation/**']
+  push:
+    branches: [main, 'windows-*']
+    paths-ignore: ['**.md', 'Documentation/**']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, runner: windows-2025 }
+          - { arch: arm64, runner: windows-11-arm }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: compnerd/gha-setup-swift@main
+        with:
+          swift-version: swift-6.4.3-release
+          swift-build: 6.4.3-RELEASE
+      - name: Build swiftly
+        run: swift build -c release --product swiftly --static-swift-stdlib
+      - name: Show swiftly's DLL dependencies
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem .build -Recurse -Filter swiftly.exe | Where-Object FullName -match 'release' | Select-Object -First 1
+          Write-Host "$($exe.FullName) $([math]::Round($exe.Length / 1MB, 1)) MB"
+          & $exe.FullName --version
+          Copy-Item $exe.FullName swiftly.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swiftly-windows-${{ matrix.arch }}
+          path: swiftly.exe
+          if-no-files-found: error
+          retention-days: 3
