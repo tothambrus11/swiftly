@@ -131,7 +131,43 @@ enum Win32 {
         return String(decoding: UnsafeRawBufferPointer(start: bytes, count: size), as: UTF8.self)
     }
 
-    // MARK: Registry
+    // MARK: The user's Path
+
+    /// Adds `directory` to the front of the user's `Path` (HKCU\Environment) unless it is already there.
+    /// Returns whether the value changed.
+    ///
+    /// The value is read and written raw, as REG_EXPAND_SZ, so entries such as `%USERPROFILE%\bin` stay
+    /// unexpanded. (`[Environment]::SetEnvironmentVariable(..., 'User')` and `setx` don't do that.)
+    static func addToUserPath(_ directory: FilePath) throws -> Bool {
+        var key: HKEY?
+        let opened = "Environment".withCString(encodedAs: UTF16.self) {
+            RegOpenKeyExW(HKEY_CURRENT_USER, $0, 0, REGSAM(0x20019 | 0x20006) /* KEY_READ | KEY_WRITE */, &key)
+        }
+        guard opened == ERROR_SUCCESS, let key else {
+            throw Win32.error("Opening HKCU\\Environment", DWORD(opened))
+        }
+        defer { RegCloseKey(key) }
+
+        let current = try readString(key, "Path") ?? ""
+        let entries = current.split(separator: ";").map(String.init)
+        if entries.contains(where: { FilePath($0) == directory }) {
+            return false
+        }
+        let updated = ([directory.string] + entries).joined(separator: ";")
+        let status = "Path".withCString(encodedAs: UTF16.self) { name in
+            updated.withCString(encodedAs: UTF16.self) { value in
+                RegSetValueExW(key, name, 0, DWORD(REG_EXPAND_SZ), UnsafeRawPointer(value).assumingMemoryBound(to: BYTE.self), DWORD((wcslen(value) + 1) * MemoryLayout<WCHAR>.size))
+            }
+        }
+        guard status == ERROR_SUCCESS else {
+            throw Win32.error("Writing HKCU\\Environment\\Path", DWORD(status))
+        }
+        // Tell Explorer, and so every terminal started from now on, that the environment changed.
+        _ = "Environment".withCString(encodedAs: UTF16.self) {
+            SendMessageTimeoutW(HWND(bitPattern: 0xFFFF) /* HWND_BROADCAST */, UINT(WM_SETTINGCHANGE), 0, LPARAM(Int(bitPattern: $0)), UINT(SMTO_ABORTIFHUNG), 5000, nil)
+        }
+        return true
+    }
 
     /// Reads a string value without expanding environment references in it.
     static func readString(_ key: HKEY, _ name: String) throws -> String? {

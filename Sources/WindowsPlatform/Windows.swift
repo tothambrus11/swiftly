@@ -221,6 +221,12 @@ public struct Windows: Platform {
         return entries.joined(separator: ";")
     }
 
+    /// Adds `directory` (swiftly's bin directory) to the front of the user's Path, so that new
+    /// terminals find swiftly and the proxies. Returns whether the Path changed.
+    public static func addToUserPath(_ directory: FilePath) throws -> Bool {
+        try Win32.addToUserPath(directory)
+    }
+
     private static func notSupportedYet(_ operation: String) -> SwiftlyError {
         SwiftlyError(message: "\(operation) isn't supported on Windows yet.")
     }
