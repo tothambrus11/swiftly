@@ -206,7 +206,7 @@ struct Init: SwiftlyCommand {
             let toolchainsDir = Swiftly.currentPlatform.swiftlyToolchainsDir(ctx)
 
             var msg = """
-            Welcome to swiftly, the Swift toolchain manager for Linux and macOS!
+            Welcome to swiftly, the Swift toolchain manager for Linux, macOS and Windows!
 
             Please read the following information carefully before proceeding with the installation. If you
             wish to customize the steps performed during the installation process, refer to 'swiftly init -h'

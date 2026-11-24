@@ -1,0 +1,376 @@
+#if os(Windows)
+import Foundation
+@testable import Swiftly
+@testable import SwiftlyCore
+import SystemPackage
+import Testing
+@testable import WindowsPlatform
+import WinSDK
+
+@Suite struct WindowsPlatformTests {
+    /// A scratch directory, deleted after `body`.
+    func withScratchDirectory(_ body: (FilePath) async throws -> Void) async throws {
+        let dir = fs.mktemp()
+        try await fs.mkdir(.parents, atPath: dir)
+        defer { try? FileManager.default.removeItem(atPath: dir.string) }
+        try await body(dir)
+    }
+
+    /// Starts `executable`, which is a copy of ping.exe, so that it runs for a while.
+    func startRunning(_ executable: FilePath) throws -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable.string)
+        process.arguments = ["-n", "60", "127.0.0.1"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        return process
+    }
+
+    var ping: FilePath { Win32.system32 / "PING.EXE" }
+
+    @Test func proxiesAreHardLinksToSwiftly() async throws {
+        try await self.withScratchDirectory { dir in
+            let swiftly = dir / "swiftly.exe"
+            try Data("swiftly".utf8).write(to: swiftly)
+            try Data("other".utf8).write(to: dir / "other.exe")
+            let platform = Windows()
+
+            try await platform.createProxy(SwiftlyTests.ctx, at: dir / "swift.exe", to: swiftly)
+
+            #expect(try await platform.isProxy(SwiftlyTests.ctx, dir / "swift.exe", to: swiftly))
+            // The file id doesn't depend on how the path is spelled.
+            #expect(try await platform.isProxy(SwiftlyTests.ctx, FilePath(dir.string.uppercased()) / "SWIFT.EXE", to: swiftly))
+            #expect(try await !platform.isProxy(SwiftlyTests.ctx, dir / "other.exe", to: swiftly))
+            #expect(try await !platform.isProxy(SwiftlyTests.ctx, swiftly, to: swiftly))
+            #expect(try await !platform.isProxy(SwiftlyTests.ctx, FilePath(swiftly.string.uppercased()), to: swiftly))
+            #expect(try await !platform.isProxy(SwiftlyTests.ctx, dir / "missing.exe", to: swiftly))
+        }
+    }
+
+    @Test func onlyExecutablesGetProxies() {
+        #expect(Windows().proxyCandidates(["swift.exe", "swiftCore.dll", "clang.cfg", "FoundationXML", "SWIFTC.EXE"]) == ["swift.exe", "SWIFTC.EXE"])
+    }
+
+    @Test func swiftlyIsRecognizedInAnyCase() {
+        #expect(isSwiftlyExecutable("swiftly"))
+        #expect(isSwiftlyExecutable("swiftly.exe"))
+        #expect(isSwiftlyExecutable("Swiftly.EXE"))
+        #expect(!isSwiftlyExecutable("swift.exe"))
+        #expect(!isSwiftlyExecutable("swiftly.exe.swiftly-0123abcd.old"))
+    }
+
+    @Test func recognizesOnlyItsOwnLeftovers() {
+        #expect(Windows.isLeftover("swiftly.exe.swiftly-0123abcd.old"))
+        #expect(Windows.isLeftover("swift.exe.swiftly-0123ABCD.new"))
+        #expect(!Windows.isLeftover("swift.exe"))
+        #expect(!Windows.isLeftover("notes.0123abcd.old"))
+        #expect(!Windows.isLeftover("notes.old"))
+        #expect(Windows.leftoverName(for: FilePath(#"C:\b\swift.exe"#), stamp: "0123abcd", kind: "old") == FilePath(#"C:\b\swift.exe.swiftly-0123abcd.old"#))
+    }
+
+    /// Upgrading swiftly while one of its proxies runs: the running proxy is renamed aside, and the
+    /// proxies are links to the new swiftly.exe afterwards. Once nothing runs the old files, they're
+    /// deleted.
+    @Test func replacesSwiftlyWhileAProxyRuns() async throws {
+        try await self.withScratchDirectory { dir in
+            let bin = dir / "bin"
+            try await fs.mkdir(atPath: bin)
+            let swiftly = bin / "swiftly.exe"
+            try FileManager.default.copyItem(atPath: self.ping.string, toPath: swiftly.string)
+            try Win32.createHardLink(at: bin / "swift.exe", to: swiftly)
+            try Win32.createHardLink(at: bin / "swiftc.exe", to: swiftly)
+            // A proxy that an upgrade which didn't finish left linked to an older swiftly.exe.
+            try Data("older swiftly".utf8).write(to: bin / "swiftly.exe.swiftly-11111111.old")
+            try Win32.createHardLink(at: bin / "lldb.exe", to: bin / "swiftly.exe.swiftly-11111111.old")
+            // Not a proxy: an executable that isn't swiftly.
+            try Data("tool".utf8).write(to: bin / "tool.exe")
+            let newSwiftly = dir / "new.exe"
+            try Data("new swiftly".utf8).write(to: newSwiftly)
+            let running = try self.startRunning(bin / "swift.exe")
+            defer { running.terminate() }
+
+            try Windows.replaceSwiftly(in: bin, with: newSwiftly)
+
+            #expect(try Data(contentsOf: swiftly) == Data("new swiftly".utf8))
+            #expect(Windows.isLink(bin / "swift.exe", to: swiftly))
+            #expect(Windows.isLink(bin / "swiftc.exe", to: swiftly))
+            #expect(Windows.isLink(bin / "lldb.exe", to: swiftly))
+            #expect(try Data(contentsOf: bin / "tool.exe") == Data("tool".utf8))
+            // The running proxy couldn't be deleted yet.
+            let leftovers = try FileManager.default.contentsOfDirectory(atPath: bin.string).filter(Windows.isLeftover)
+            #expect(!leftovers.isEmpty)
+
+            running.terminate()
+            running.waitUntilExit()
+            Windows.removeLeftovers(in: bin)
+            #expect(try FileManager.default.contentsOfDirectory(atPath: bin.string).filter(Windows.isLeftover).isEmpty)
+        }
+    }
+
+    /// A failed upgrade leaves swiftly.exe and its proxies as they were.
+    @Test func rollsBackAFailedReplacement() async throws {
+        try await self.withScratchDirectory { dir in
+            let bin = dir / "bin"
+            try await fs.mkdir(atPath: bin)
+            let swiftly = bin / "swiftly.exe"
+            try Data("old swiftly".utf8).write(to: swiftly)
+            try Win32.createHardLink(at: bin / "swift.exe", to: swiftly)
+
+            #expect(throws: (any Error).self) {
+                try Windows.replaceSwiftly(in: bin, with: dir / "missing.exe")
+            }
+
+            #expect(try Data(contentsOf: swiftly) == Data("old swiftly".utf8))
+            #expect(Windows.isLink(bin / "swift.exe", to: swiftly))
+            #expect(try FileManager.default.contentsOfDirectory(atPath: bin.string).sorted() == ["swift.exe", "swiftly.exe"])
+        }
+    }
+
+    /// A failure in the middle of relinking the proxies undoes everything done so far.
+    @Test func rollsBackAReplacementThatFailsHalfway() async throws {
+        try await self.withScratchDirectory { dir in
+            let bin = dir / "bin"
+            try await fs.mkdir(atPath: bin)
+            let swiftly = bin / "swiftly.exe"
+            try Data("old swiftly".utf8).write(to: swiftly)
+            try Win32.createHardLink(at: bin / "swift.exe", to: swiftly)
+            try Win32.createHardLink(at: bin / "swiftc.exe", to: swiftly)
+            let newSwiftly = dir / "new.exe"
+            try Data("new swiftly".utf8).write(to: newSwiftly)
+            struct Injected: Error {}
+            var relinked = 0
+
+            #expect(throws: Injected.self) {
+                try Windows.replaceSwiftly(in: bin, with: newSwiftly, stamp: "0000aaaa") { _ in
+                    relinked += 1
+                    if relinked == 2 { throw Injected() }
+                }
+            }
+
+            #expect(try Data(contentsOf: swiftly) == Data("old swiftly".utf8))
+            #expect(Windows.isLink(bin / "swift.exe", to: swiftly))
+            #expect(Windows.isLink(bin / "swiftc.exe", to: swiftly))
+            #expect(try FileManager.default.contentsOfDirectory(atPath: bin.string).sorted() == ["swift.exe", "swiftc.exe", "swiftly.exe"])
+        }
+    }
+
+    /// installSwiftlyBin changes nothing when swiftly runs from the bin directory already (by file
+    /// id), and otherwise takes the install lock.
+    @Test func installsSwiftlyUnderTheLockUnlessItsThereAlready() async throws {
+        try await self.withScratchDirectory { dir in
+            let bin = dir / "bin"
+            let home = dir / "home"
+            try await fs.mkdir(atPath: bin)
+            try await fs.mkdir(atPath: home)
+            try Data("swiftly".utf8).write(to: bin / "swiftly.exe")
+            try Win32.createHardLink(at: bin / "swift.exe", to: bin / "swiftly.exe")
+            // A proxy is the same file: nothing to install.
+            #expect(try await !Windows.installSwiftly(FilePath((bin / "swift.exe").string.uppercased()), binDir: bin, homeDir: home))
+
+            let newSwiftly = dir / "new.exe"
+            try Data("new swiftly".utf8).write(to: newSwiftly)
+            let lock = try FileLock(at: home / "swiftly.lock")
+            await #expect(throws: (any Error).self) {
+                try await Windows.installSwiftly(newSwiftly, binDir: bin, homeDir: home, lockTimeout: 1)
+            }
+            #expect(try Data(contentsOf: bin / "swiftly.exe") == Data("swiftly".utf8))
+            try await lock.unlock()
+
+            #expect(try await Windows.installSwiftly(newSwiftly, binDir: bin, homeDir: home, lockTimeout: 10))
+            #expect(try Data(contentsOf: bin / "swiftly.exe") == Data("new swiftly".utf8))
+            #expect(Windows.isLink(bin / "swift.exe", to: bin / "swiftly.exe"))
+        }
+    }
+
+    /// After removing a running proxy, what's left of it (if Windows didn't delete it) isn't a proxy:
+    /// swiftly isn't linked anymore.
+    @Test func aRemovedRunningProxyIsntAProxy() async throws {
+        try await self.withScratchDirectory { home in
+            let bin = home / "bin"
+            try await fs.mkdir(atPath: bin)
+            let swiftly = bin / "swiftly.exe"
+            try FileManager.default.copyItem(atPath: self.ping.string, toPath: swiftly.string)
+            try Win32.createHardLink(at: bin / "swift.exe", to: swiftly)
+            let running = try self.startRunning(bin / "swift.exe")
+            defer { running.terminate() }
+            let ctx = SwiftlyCoreContext(mockedHomeDir: home, httpRequestExecutor: HTTPRequestExecutorFail(), outputHandler: nil, inputProvider: nil)
+
+            _ = try await Windows().removeFromBinDir(ctx, bin / "swift.exe")
+
+            #expect(try await Unlink.existingProxies(ctx).isEmpty)
+            for leftover in try FileManager.default.contentsOfDirectory(atPath: bin.string).filter(Windows.isLeftover) {
+                #expect(try await !Windows().isProxy(ctx, bin / leftover, to: swiftly))
+            }
+        }
+    }
+
+    @Test func removesARunningProxy() async throws {
+        try await self.withScratchDirectory { dir in
+            let swiftly = dir / "swiftly.exe"
+            try FileManager.default.copyItem(atPath: self.ping.string, toPath: swiftly.string)
+            try Win32.createHardLink(at: dir / "swift.exe", to: swiftly)
+            try Win32.createHardLink(at: dir / "swiftc.exe", to: swiftly)
+            let running = try self.startRunning(dir / "swift.exe")
+            defer { running.terminate() }
+
+            #expect(try await Windows().removeFromBinDir(SwiftlyTests.ctx, dir / "swiftc.exe") == nil)
+            let leftover = try await Windows().removeFromBinDir(SwiftlyTests.ctx, dir / "swift.exe")
+
+            #expect(!FileManager.default.fileExists(atPath: (dir / "swift.exe").string))
+            #expect(!FileManager.default.fileExists(atPath: (dir / "swiftc.exe").string))
+            // Windows may delete a name of a running executable (it has other names here, and NTFS
+            // has POSIX delete semantics); if not, what's left is a leftover in the same directory.
+            if let leftover {
+                #expect(leftover.removingLastComponent() == dir)
+                #expect(Windows.isLeftover(leftover.lastComponent!.string))
+            }
+        }
+    }
+
+    /// Unlink finds the proxies by file id, and swiftly.exe (a link to itself) isn't one.
+    @Test func unlinkFindsProxiesButNotSwiftly() async throws {
+        try await self.withScratchDirectory { home in
+            let bin = home / "bin"
+            try await fs.mkdir(atPath: bin)
+            try Data("swiftly".utf8).write(to: bin / "swiftly.exe")
+            try Data("other".utf8).write(to: bin / "tool.exe")
+            let ctx = SwiftlyCoreContext(mockedHomeDir: home, httpRequestExecutor: HTTPRequestExecutorFail(), outputHandler: nil, inputProvider: nil)
+
+            #expect(try await Unlink.existingProxies(ctx).isEmpty)
+
+            try Win32.createHardLink(at: bin / "swift.exe", to: bin / "swiftly.exe")
+            #expect(try await Unlink.existingProxies(ctx) == [bin / "swift.exe"])
+        }
+    }
+
+    /// self-uninstall removes the proxies and swiftly.exe, also while swiftly.exe runs (as it does
+    /// when swiftly uninstalls itself): that's renamed aside, to be deleted once it exits.
+    @Test func selfUninstallRemovesProxiesAndARunningSwiftly() async throws {
+        try await self.withScratchDirectory { home in
+            let bin = home / "bin"
+            try await fs.mkdir(atPath: bin)
+            let swiftly = bin / "swiftly.exe"
+            try FileManager.default.copyItem(atPath: self.ping.string, toPath: swiftly.string)
+            try Win32.createHardLink(at: bin / "swift.exe", to: swiftly)
+            try Win32.createHardLink(at: bin / "swiftc.exe", to: swiftly)
+            try Data("{}".utf8).write(to: home / "config.json")
+            let running = try self.startRunning(swiftly)
+            defer { running.terminate() }
+            let ctx = SwiftlyCoreContext(mockedHomeDir: home, httpRequestExecutor: HTTPRequestExecutorFail(), outputHandler: nil, inputProvider: nil)
+
+            try await SelfUninstall.execute(ctx, verbose: false)
+
+            // Only a leftover of swiftly.exe may remain (if Windows didn't let it be deleted while it runs).
+            let left = try FileManager.default.contentsOfDirectory(atPath: bin.string)
+            #expect(left.count <= 1)
+            #expect(left.allSatisfy { Windows.isLeftover($0) && $0.lowercased().hasPrefix("swiftly.exe.") })
+            #expect(!FileManager.default.fileExists(atPath: (home / "config.json").string))
+
+            running.terminate()
+            running.waitUntilExit()
+            if FileManager.default.fileExists(atPath: bin.string) {
+                Windows.removeLeftovers(in: bin)
+                #expect(try FileManager.default.contentsOfDirectory(atPath: bin.string).isEmpty)
+            }
+        }
+    }
+
+    /// The helper's script passes as one double-quoted -Command argument.
+    @Test func writesTheDeletionScriptForCommand() {
+        let script = Windows.deletionScript([FilePath(#"C:\it's\swiftly.exe.swiftly-0000aaaa.old"#)], directories: [FilePath(#"C:\it's"#)], waitingFor: 42)
+        #expect(!script.contains("\""))
+        #expect(!script.contains("\n"))
+        #expect(script.contains(#"'C:\it''s\swiftly.exe.swiftly-0000aaaa.old'"#))
+        #expect(script.contains("Wait-Process -Id 42"))
+    }
+
+    // MARK: The user's Path and environment
+
+    @Test func comparesPathEntriesLikeWindows() {
+        let expand: (String) -> String = { $0.replacingOccurrences(of: "%LOCALAPPDATA%", with: #"C:\Users\Me\AppData\Local"#) }
+        let bin = FilePath(#"C:\Users\Me\AppData\Local\swiftly\bin"#)
+        func path(_ value: String, expandable: Bool = true) -> Win32.RegistryString { .init(value: value, expandable: expandable) }
+        #expect(UserPath.contains(path(#"C:\Windows;%LOCALAPPDATA%\swiftly\bin"#), bin, expand: expand))
+        #expect(UserPath.contains(path(#"c:\users\me\appdata\local\SWIFTLY\BIN\;C:\Windows"#), bin, expand: expand))
+        #expect(UserPath.contains(path(#""C:/Users/Me/AppData/Local/swiftly/bin""#), bin, expand: expand))
+        #expect(!UserPath.contains(path(#"C:\Users\Me\AppData\Local\swiftly\bin2"#), bin, expand: expand))
+        #expect(!UserPath.contains(path(""), bin, expand: expand))
+        // Windows doesn't expand the entries of a REG_SZ Path.
+        #expect(!UserPath.contains(path(#"%LOCALAPPDATA%\swiftly\bin"#, expandable: false), bin, expand: expand))
+    }
+
+    @Test func addsAndRemovesPathEntries() {
+        let expand: (String) -> String = { $0.replacingOccurrences(of: "%LOCALAPPDATA%", with: #"C:\L"#) }
+        let bin = FilePath(#"C:\L\swiftly\bin"#)
+        #expect(UserPath.adding(bin, to: "") == #"C:\L\swiftly\bin"#)
+        #expect(UserPath.adding(bin, to: #"%USERPROFILE%\.dotnet\tools"#) == #"C:\L\swiftly\bin;%USERPROFILE%\.dotnet\tools"#)
+        // Removing keeps the other entries exactly as written, unexpanded.
+        let path = Win32.RegistryString(value: #"%LOCALAPPDATA%\swiftly\bin;%USERPROFILE%\.dotnet\tools;C:\L\SWIFTLY\bin\"#, expandable: true)
+        #expect(UserPath.removing(bin, from: path, expand: expand) == #"%USERPROFILE%\.dotnet\tools"#)
+    }
+
+    @Test func findsASwiftAheadOfTheProxies() {
+        let bin = FilePath(#"C:\L\swiftly\bin"#)
+        let swiftExists: (FilePath) -> Bool = { $0.string.lowercased().hasSuffix(#"\swift\bin\swift.exe"#) || $0.string == #"rel\swift.exe"# }
+        let machine = Win32.RegistryString(value: #"C:\Windows;;rel;C:\Swift\bin"#, expandable: false)
+        let user = Win32.RegistryString(value: bin.string, expandable: false)
+        #expect(UserPath.swiftAhead(of: bin, machine: machine, user: user, exists: swiftExists) == FilePath(#"C:\Swift\bin\swift.exe"#))
+        // Entries after swiftly's don't matter, and empty or relative ones are skipped.
+        #expect(UserPath.swiftAhead(of: bin, machine: .init(value: #";rel"#, expandable: false), user: .init(value: bin.string + #";C:\Swift\bin"#, expandable: false), exists: swiftExists) == nil)
+    }
+
+    /// The registry calls, on a scratch key: values keep their type, an emptied Path is deleted
+    /// rather than left empty, and swiftly's variables are recorded and forgotten.
+    @Test func roundTripsTheEnvironmentInTheRegistry() throws {
+        let environment = RegistryEnvironment(root: HKEY_CURRENT_USER, subkey: #"Software\swiftly-tests\#(UUID().uuidString)"#)
+        try Win32.createKey(environment.root, environment.subkey)
+        defer { Win32.deleteKey(environment.root, environment.subkey) }
+
+        try environment.update { key in
+            try Win32.writeString(key, "Plain", .init(value: #"C:\x"#, expandable: false))
+            try Win32.writeString(key, "Expandable", .init(value: #"%SystemRoot%\x"#, expandable: true))
+        }
+        #expect(try environment.read("Plain") == .init(value: #"C:\x"#, expandable: false))
+        #expect(try environment.read("Expandable") == .init(value: #"%SystemRoot%\x"#, expandable: true))
+        #expect(try environment.read("Missing") == nil)
+
+        let bin = FilePath(#"C:\swiftly-tests\bin"#)
+        #expect(try environment.addToPath(bin))
+        #expect(try !environment.addToPath(bin))
+        #expect(try environment.read("Path") == .init(value: bin.string, expandable: true))
+        #expect(try environment.removeFromPath(bin))
+        #expect(try environment.read("Path") == nil)
+
+        try environment.update { try Win32.writeString($0, "Path", .init(value: #"%SystemRoot%\y"#, expandable: true)) }
+        #expect(try environment.addToPath(bin))
+        #expect(try environment.read("Path") == .init(value: bin.string + #";%SystemRoot%\y"#, expandable: true))
+        #expect(try environment.removeFromPath(bin))
+        #expect(try environment.read("Path") == .init(value: #"%SystemRoot%\y"#, expandable: true))
+
+        // A REG_SZ Path stays REG_SZ.
+        try environment.update { try Win32.writeString($0, "Path", .init(value: #"C:\z"#, expandable: false)) }
+        #expect(try environment.addToPath(bin))
+        #expect(try environment.read("Path") == .init(value: bin.string + #";C:\z"#, expandable: false))
+
+        // Which Path entry swiftly added.
+        let ownership = PathOwnership(root: environment.root, subkey: environment.subkey + #"\owner"#)
+        #expect(try !ownership.owns(bin))
+        try ownership.write(bin)
+        #expect(try ownership.owns(FilePath(bin.string.uppercased() + #"\"#)))
+        try ownership.clear()
+        #expect(try !ownership.owns(bin))
+
+        // A value that already says the same through REG_EXPAND_SZ stays as it is.
+        let systemRoot = Win32.expandEnvironmentStrings("%SystemRoot%")
+        try environment.update { try Win32.writeString($0, "SWIFTLY_HOME_DIR", .init(value: #"%SystemRoot%\s"#, expandable: true)) }
+        #expect(try environment.record([("SWIFTLY_HOME_DIR", systemRoot + #"\s"#), ("SWIFTLY_BIN_DIR", #"C:\b"#)]) == ["SWIFTLY_BIN_DIR"])
+        #expect(try environment.read("SWIFTLY_HOME_DIR") == .init(value: #"%SystemRoot%\s"#, expandable: true))
+        #expect(try environment.read("SWIFTLY_BIN_DIR") == .init(value: #"C:\b"#, expandable: false))
+        // Only values that still point to this installation are forgotten.
+        #expect(try environment.forget([("SWIFTLY_HOME_DIR", systemRoot + #"\s"#), ("SWIFTLY_BIN_DIR", #"C:\other"#)]) == ["SWIFTLY_HOME_DIR"])
+        #expect(try environment.read("SWIFTLY_HOME_DIR") == nil)
+        #expect(try environment.read("SWIFTLY_BIN_DIR") != nil)
+    }
+}
+#endif

@@ -56,24 +56,24 @@ extension Platform {
             )
         }
 
-        // TODO: Handle Git Bash and other shells, which pass the variable as PATH rather than Path.
-        let path = ProcessInfo.processInfo.environment["Path"] ?? ""
+        // Variable names are case-insensitive on Windows: Git Bash, for one, passes PATH rather than Path.
+        let path = ProcessInfo.processInfo.environment.first { $0.key.caseInsensitiveCompare("Path") == .orderedSame }?.value ?? ""
         var pathComponents = path.split(separator: ";").map { String($0) }
 
         // The toolchain goes to the beginning of the Path. Entries compare as FilePath, which treats
-        // forward and backward slashes alike and drops a trailing one.
-        pathComponents.removeAll(where: { FilePath($0) == tcPath })
+        // forward and backward slashes alike and drops a trailing one, and case-insensitively.
+        func same(_ entry: String, _ directory: FilePath) -> Bool {
+            FilePath(entry).string.lowercased() == directory.string.lowercased()
+        }
+        pathComponents.removeAll(where: { same($0, tcPath) })
         // TODO: add runtimes path too after toolchain path. Can compute or maybe add it from other places later
         pathComponents = [tcPath.string] + pathComponents
 
         // Remove swiftly bin directory from the Path entirely
         let swiftlyBinDir = self.swiftlyBinDir(ctx)
-        pathComponents.removeAll(where: { FilePath($0) == swiftlyBinDir })
+        pathComponents.removeAll(where: { same($0, swiftlyBinDir) })
 
         environment = environment.updating(["Path": String(pathComponents.joined(separator: ";"))])
-        // TEMP: show the Path the toolchain command gets
-        await ctx.printError("swiftly: Path=\(pathComponents.joined(separator: ";"))")
-
         environment = try await self.updateEnvironmentWithToolchain(ctx, environment, toolchain, path: String(pathComponents.joined(separator: ";")))
 
         return environment
@@ -104,5 +104,15 @@ public func isSwiftlyExecutable(_ name: String) -> Bool {
     return lowercased == "swiftly" || lowercased == "swiftly.exe"
 #else
     name == "swiftly"
+#endif
+}
+
+/// A file name as the file system compares it: lowercased on Windows, whose file names are
+/// case-insensitive, unchanged elsewhere.
+public func fileNameKey(_ name: String) -> String {
+#if os(Windows)
+    name.lowercased()
+#else
+    name
 #endif
 }

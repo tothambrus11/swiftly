@@ -95,14 +95,6 @@ public struct Windows: Platform {
 #endif
     }
 
-    // swiftly.exe isn't installed into its bin directory yet, and there are no proxies to run it;
-    // both are a follow-up.
-    public func installSwiftlyBin(_: SwiftlyCoreContext) async throws {}
-
-    public func findSwiftlyBin(_: SwiftlyCoreContext) async throws -> FilePath? {
-        nil
-    }
-
     /// There's no shell profile on Windows: new sessions get their environment from the registry.
     public var sessionEnvironment: (any SessionEnvironment)? {
         UserEnvironment()
