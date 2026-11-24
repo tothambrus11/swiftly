@@ -67,10 +67,18 @@ public struct Windows: Platform {
         throw Self.notSupportedYet("Installing toolchains")
     }
 
+    /// The subject of the certificate swift.org signs its Windows installers with.
+    static let toolchainSigner = "Apple Inc."
+
     public func verifyToolchainSignature(
-        _: SwiftlyCoreContext, toolchainFile _: ToolchainFile, archive _: FilePath, verbose _: Bool
+        _ ctx: SwiftlyCoreContext, toolchainFile _: ToolchainFile, archive: FilePath, verbose: Bool
     ) async throws {
-        throw Self.notSupportedYet("Verifying toolchain signatures")
+        // swift.org doesn't publish PGP signatures for its Windows installers. They carry
+        // Authenticode signatures instead, which Windows itself checks.
+        if verbose {
+            await ctx.message("Verifying the toolchain's Authenticode signature...")
+        }
+        try Authenticode.verify(archive, signer: Self.toolchainSigner)
     }
 
     public func verifySwiftlySignature(

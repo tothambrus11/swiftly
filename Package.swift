@@ -188,10 +188,18 @@ let package = Package(
             ]
         ),
         .target(
+            name: "CWinTrust",
+            linkerSettings: [
+                .linkedLibrary("wintrust", .when(platforms: [.windows])),
+                .linkedLibrary("crypt32", .when(platforms: [.windows])),
+            ]
+        ),
+        .target(
             name: "WindowsPlatform",
             dependencies: [
                 "SwiftlyCore",
                 .target(name: "CMsi", condition: .when(platforms: [.windows])),
+                .target(name: "CWinTrust", condition: .when(platforms: [.windows])),
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "SystemPackage", package: "swift-system"),
             ],
