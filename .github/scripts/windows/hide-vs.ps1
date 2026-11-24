@@ -8,7 +8,7 @@ Get-Service | Where-Object { $_.Name -match 'VSStandardCollector|VSInstaller|vsh
   Write-Host "    stop service $($_.Name)"; Stop-Service $_.Name -Force -ErrorAction SilentlyContinue
 }
 Get-Process | Where-Object { $_.Path -and $_.Path -match 'Visual Studio|Windows Kits' } | ForEach-Object {
-  Write-Host "    kill $($_.Path)"; Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+  Write-Host "    stop $($_.Path)"; Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
 }
 
 $dirs = @(

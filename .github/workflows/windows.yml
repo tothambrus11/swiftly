@@ -23,8 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x64, runner: windows-2025 }
-          - { arch: arm64, runner: windows-11-arm }
+          - {arch: x64, runner: windows-2025}
+          - {arch: arm64, runner: windows-11-arm}
     steps:
       - uses: actions/checkout@v4
       - name: Install Swift
@@ -68,9 +68,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { label: 'x64, no Visual Studio', arch: x64, runner: windows-2025, msvc: portable }
-          - { label: 'arm64, no Visual Studio', arch: arm64, runner: windows-11-arm, msvc: portable }
-          - { label: 'x64, Visual Studio', arch: x64, runner: windows-2025, msvc: visual-studio }
+          - {label: 'x64, no Visual Studio', arch: x64, runner: windows-2025, msvc: portable}
+          - {label: 'arm64, no Visual Studio', arch: arm64, runner: windows-11-arm, msvc: portable}
+          - {label: 'x64, Visual Studio', arch: x64, runner: windows-2025, msvc: visual-studio}
     env:
       JOB_LABEL: ${{ matrix.label }}
     steps:

@@ -152,15 +152,16 @@ enum MSVCSysroot {
             return nil
         }
         let component = self.arch == "arm64" ? "Microsoft.VisualStudio.Component.VC.Tools.ARM64" : "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
-        guard let result = try? await run(
-            .path(vswhere),
-            arguments: ["-latest", "-products", "*", "-requires", component, "-property", "installationPath", "-utf8", "-nologo"],
-            output: .string(limit: 64 * 1024),
-            error: .discarded
-        ), result.terminationStatus.isSuccess,
-            let path = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty,
-            self.hasWindowsSDK()
+        let arguments: Arguments = [
+            "-latest", "-products", "*", "-requires", component, "-property", "installationPath", "-utf8", "-nologo",
+        ]
+        guard let result = try? await run(.path(vswhere), arguments: arguments, output: .string(limit: 64 * 1024), error: .discarded),
+              result.terminationStatus.isSuccess
         else {
+            return nil
+        }
+        let path = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, self.hasWindowsSDK() else {
             return nil
         }
         return FilePath(path)
