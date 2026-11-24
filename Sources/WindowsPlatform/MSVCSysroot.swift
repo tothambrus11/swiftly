@@ -189,7 +189,7 @@ enum MSVCSysroot {
     // MARK: Resolving what to download
 
     /// The Visual Studio 2022 channel. Its newest toolset (14.44) still accepts the clang versions
-    /// in current Swift toolchains; the STL of Visual Studio 2026 (14.50+) requires clang 20 or later.
+    /// in current Swift toolchains; the STL of Visual Studio 2026 (14.52) rejects clang < 22 (error STL1000).
     static let visualStudioChannel = URL(string: "https://aka.ms/vs/17/release/channel")!
 
     struct File: Codable, Equatable {
