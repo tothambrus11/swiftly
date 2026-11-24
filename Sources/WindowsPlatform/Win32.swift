@@ -141,7 +141,7 @@ enum Win32 {
     static func addToUserPath(_ directory: FilePath) throws -> Bool {
         var key: HKEY?
         let opened = "Environment".withCString(encodedAs: UTF16.self) {
-            RegOpenKeyExW(HKEY_CURRENT_USER, $0, 0, REGSAM(0x2_0019 | 0x2_0006) /* KEY_READ | KEY_WRITE */, &key)
+            RegOpenKeyExW(HKEY_CURRENT_USER, $0, 0, REGSAM(0x20019 | 0x20006) /* KEY_READ | KEY_WRITE */, &key)
         }
         guard opened == ERROR_SUCCESS, let key else {
             throw Win32.error("Opening HKCU\\Environment", DWORD(opened))
@@ -194,7 +194,7 @@ enum Win32 {
     static func readMachineString(_ subkey: String, _ name: String) -> String? {
         var key: HKEY?
         let opened = subkey.withCString(encodedAs: UTF16.self) {
-            RegOpenKeyExW(HKEY_LOCAL_MACHINE, $0, 0, REGSAM(0x2_0019) /* KEY_READ */, &key)
+            RegOpenKeyExW(HKEY_LOCAL_MACHINE, $0, 0, REGSAM(0x20019) /* KEY_READ */, &key)
         }
         guard opened == ERROR_SUCCESS, let key else {
             return nil
