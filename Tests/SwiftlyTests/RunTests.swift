@@ -45,7 +45,7 @@ import Darwin
     }
 
     /// Tests the `run` command verifying that the environment is as expected
-    @Test(.mockedSwiftlyVersion(), .mockHomeToolchains()) func runEnvironment() async throws {
+    @Test(.mockedSwiftlyVersion(), .mockHomeToolchains(), .disabled(if: isWindows, "runs a POSIX shell")) func runEnvironment() async throws {
 #if os(macOS)
         // Prevent platform environment variable from affecting the tests
         unsetenv("TOOLCHAINS")

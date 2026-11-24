@@ -152,7 +152,7 @@ import Testing
     }
 
     /// Self-update always queries the server, regardless of when the last check was.
-    @Test func selfUpdateIgnoresInterval() async throws {
+    @Test(.disabled(if: isWindows, "self-update isn't supported on Windows yet")) func selfUpdateIgnoresInterval() async throws {
         let state = try await self.runCheck(
             serverVersion: Self.newMinorVersion,
             lastCheck: Self.now.addingTimeInterval(-1),
@@ -163,7 +163,7 @@ import Testing
         #expect(state == Self.fetched)
     }
 
-    @Test func selfUpdateRecordsCheckWithNoPriorCheck() async throws {
+    @Test(.disabled(if: isWindows, "self-update isn't supported on Windows yet")) func selfUpdateRecordsCheckWithNoPriorCheck() async throws {
         let state = try await self.runCheck(
             serverVersion: Self.newMajorVersion,
             lastCheck: nil,
@@ -175,7 +175,7 @@ import Testing
     }
 
     /// The check is recorded even when there is nothing to update to.
-    @Test func selfUpdateRecordsCheckWhenAlreadyUpToDate() async throws {
+    @Test(.disabled(if: isWindows, "self-update isn't supported on Windows yet")) func selfUpdateRecordsCheckWhenAlreadyUpToDate() async throws {
         let state = try await self.runCheck(
             serverVersion: SwiftlyCore.version,
             lastCheck: Self.now.addingTimeInterval(-(Self.interval + 1)),

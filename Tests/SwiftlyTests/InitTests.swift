@@ -11,7 +11,7 @@ import Testing
         #expect(!migrations.filter { $0.matches(SwiftlyCore.version) }.isEmpty)
     }
 
-    @Test(.testHome(), arguments: ["/bin/bash", "/bin/zsh", "/bin/fish"]) func initFresh(_ shell: String) async throws {
+    @Test(.testHome(), .disabled(if: isWindows, "shell profiles and env.sh; on Windows, init uses the user's Path"), arguments: ["/bin/bash", "/bin/zsh", "/bin/fish"]) func initFresh(_ shell: String) async throws {
         // GIVEN: a fresh user account without swiftly installed
         try? await fs.remove(atPath: Swiftly.currentPlatform.swiftlyConfigFile(SwiftlyTests.ctx))
 
@@ -181,6 +181,7 @@ import Testing
 
     @Test(
         .testHome("inject-a'$(touch PWNED)`id`;x"),
+        .disabled(if: isWindows, "shell profiles and env.sh; on Windows, init uses the user's Path"),
         arguments: ["/bin/zsh", "/bin/bash", "/bin/fish"],
         // arguments: ["/bin/bash", "/bin/zsh", "/bin/fish"],
     ) func initEnvShEscape(shell: String) async throws {
@@ -217,6 +218,7 @@ import Testing
 
     @Test(
         .testHome(),
+        .disabled(if: isWindows, "shell profiles and env.sh; on Windows, init uses the user's Path"),
         arguments: [
             ("bash", 0),
             ("bash", 1),

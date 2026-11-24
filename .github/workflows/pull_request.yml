@@ -91,11 +91,63 @@ jobs:
         shell: pwsh
         run: ./scripts/prep-gh-action.ps1
       - name: Build swiftly
+        # Statically linked, so swiftly.exe (and the proxies, which are hard links to it) needs no Swift runtime.
         run: swift build -c release --product swiftly --static-swift-stdlib
-      - name: Build the tests
-        run: swift build --build-tests
-      - name: Run the tests that pass on Windows so far
-        run: swift test --skip-build --filter "WindowsPlatformTests|PlatformTests/(toolchainDownloadPlatform|arm64SnapshotsOfWindows)"
+      - name: Collect swiftly.exe
+        shell: pwsh
+        run: Copy-Item (Join-Path (swift build -c release --show-bin-path) 'swiftly.exe') swiftly.exe
+      - name: Upload swiftly.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftly-windows-${{ matrix.arch }}
+          path: swiftly.exe
+          if-no-files-found: error
+          retention-days: 1
+      - name: Build and Test
+        run: swift test
+
+  tests-windows-end-to-end:
+    name: Test End to End / Windows ${{ matrix.label }}
+    needs: tests-windows
+    # swiftly.exe is uploaded before the unit tests run: test end to end even if those fail.
+    if: ${{ !cancelled() }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    # The main snapshot is a moving target: its job reports without blocking the pull request.
+    continue-on-error: ${{ matrix.experimental == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {label: x64, arch: x64, runner: windows-2025, nonascii: false}
+          - {label: arm64, arch: arm64, runner: windows-11-arm, nonascii: false}
+          - {label: 'x64, non-ASCII home', arch: x64, runner: windows-2025, nonascii: true}
+          # A snapshot: its installer has the private runtime (prt) and is over 2 GB.
+          - {label: 'x64, main snapshot', arch: x64, runner: windows-2025, nonascii: false, first: main-snapshot, older: 6.4.3, experimental: true}
+    env:
+      JOB_LABEL: ${{ matrix.label }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: swiftly-windows-${{ matrix.arch }}
+          path: ${{ runner.temp }}/swiftly-download
+      - name: Test swiftly
+        shell: pwsh
+        run: |
+          if ('${{ matrix.nonascii }}' -eq 'true') {
+            # A home directory whose path has non-ASCII characters: CJK and an emoji (outside the BMP).
+            $name = 'swiftly-' + [char]0x6D4B + [char]0x8BD5 + '-' + [char]::ConvertFromUtf32(0x1F989)
+            $env:SWIFTLY_HOME_DIR = Join-Path $env:LOCALAPPDATA $name
+            $env:SWIFTLY_BIN_DIR = Join-Path $env:SWIFTLY_HOME_DIR 'bin'
+            $env:SWIFTLY_TOOLCHAINS_DIR = Join-Path $env:SWIFTLY_HOME_DIR 'toolchains'
+          }
+          # Until the toolchains' signatures are verified, installing needs --no-verify.
+          $more = @{ InstallOptions = @('--no-verify') }
+          if ('${{ matrix.nonascii }}' -eq 'true') { $more.OlderInstallOnly = $true }
+          if ('${{ matrix.first }}') { $more.First = '${{ matrix.first }}'; $more.Older = '${{ matrix.older }}' }
+          ./.github/scripts/windows/test-swiftly.ps1 -Swiftly "$env:RUNNER_TEMP\swiftly-download\swiftly.exe" @more
 
   releasebuildcheck:
     name: Release Build Check / Linux

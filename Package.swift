@@ -185,6 +185,8 @@ let package = Package(
             name: "CMsi",
             linkerSettings: [
                 .linkedLibrary("msi", .when(platforms: [.windows])),
+                .linkedLibrary("cabinet", .when(platforms: [.windows])),
+                .linkedLibrary("bcrypt", .when(platforms: [.windows])),
             ]
         ),
         .target(

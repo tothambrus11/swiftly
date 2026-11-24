@@ -76,6 +76,16 @@ Uninstall this toolchain after you're finished with it:
 $ swiftly uninstall main-snapshot
 ```
 
+## Windows
+
+On Windows, swiftly installs each toolchain from the swift.org installer into its own directory under `%LOCALAPPDATA%\swiftly\toolchains`, without running the installer, so several versions can be installed side by side and no administrator rights are needed.
+`swiftly init` adds `%LOCALAPPDATA%\swiftly\bin` to your user `Path` (unless you pass `--no-modify-profile`); open a new terminal afterwards.
+
+As with the swift.org installer, Swift needs Visual Studio or its Build Tools, with the C++ tools and a Windows SDK, to link programs.
+If they're missing, swiftly still installs the toolchain and prints the command that installs them.
+
+Programs you build link against the Swift runtime DLLs of their toolchain. `swift run` and `swiftly run` put them on the `Path`; to start a program directly, run it with `swiftly run .\program.exe`.
+
 ## Installing toolchains through an HTTP proxy
 
 Swiftly downloads a list of toolchains from https://www.swift.org/ and retrieves them from CDN via https://download.swift.org.

@@ -13,7 +13,7 @@ struct Uninstall: SwiftlyCommand {
     package struct UninstallCancelledError: Error {}
 
     private struct ToolchainSelectionResult {
-        let validToolchains: Set<ToolchainVersion>
+        var validToolchains: Set<ToolchainVersion>
         let selectorToToolchains: [String: [ToolchainVersion]]
         let invalidSelectors: [String]
         let noMatchSelectors: [String]
@@ -71,7 +71,16 @@ struct Uninstall: SwiftlyCommand {
         }
 
         let startingConfig = try await Config.load(ctx)
-        let selectionResult = try await parseAndValidateToolchainSelectors(startingConfig)
+        var selectionResult = try await parseAndValidateToolchainSelectors(startingConfig)
+
+        // Toolchains installed outside of swiftly (such as with the Windows installer) are listed,
+        // but swiftly can't uninstall them: skip them before anything changes.
+        for toolchain in selectionResult.validToolchains.sorted() {
+            if let note = await Swiftly.currentPlatform.externallyInstalledToolchainNote(ctx, toolchain) {
+                await ctx.message("Skipping \(toolchain): \(note)")
+                selectionResult.validToolchains.remove(toolchain)
+            }
+        }
         let confirmedToolchains = try await handleErrorsAndGetConfirmation(ctx, selectionResult)
 
         try await executeUninstalls(ctx, confirmedToolchains, startingConfig)
@@ -228,20 +237,36 @@ struct Uninstall: SwiftlyCommand {
 
         // Apply proper sorting with access to config
         let sortedToolchains = self.applySortingStrategy(toolchains, config: startingConfig)
+        var failed: [ToolchainVersion] = []
 
         for (index, toolchain) in sortedToolchains.enumerated() {
             await self.displayProgress(ctx, index: index, total: sortedToolchains.count, toolchain: toolchain)
 
             var config = try await Config.load(ctx)
 
+            let originalInUse = config.inUse
             if toolchain == config.inUse {
                 try await self.handleInUseToolchainReplacement(ctx, toolchain, sortedToolchains, &config)
             }
 
-            try await Self.execute(ctx, toolchain, &config, verbose: self.root.verbose)
+            do {
+                try await Self.execute(ctx, toolchain, &config, verbose: self.root.verbose)
+            } catch let error as ToolchainNotRemovedError {
+                // The toolchain is still there and usable: so is the default, if it was this one.
+                if let originalInUse, config.inUse != originalInUse {
+                    _ = try? await Use.execute(ctx, originalInUse, globalDefault: true, verbose: self.root.verbose, &config)
+                }
+                // Go on with the others, and say which ones are left.
+                await ctx.message()
+                await ctx.message("Couldn't uninstall \(toolchain): \(error)")
+                failed.append(toolchain)
+            }
         }
 
-        await self.displayCompletionMessage(ctx, sortedToolchains.count)
+        await self.displayCompletionMessage(ctx, sortedToolchains.count - failed.count)
+        if !failed.isEmpty {
+            throw SwiftlyError(message: "Couldn't uninstall \(failed.map(\.name).joined(separator: ", ")).")
+        }
     }
 
     private func applySortingStrategy(_ toolchains: [ToolchainVersion], config: Config) -> [ToolchainVersion] {
@@ -332,7 +357,8 @@ struct Uninstall: SwiftlyCommand {
         }
 
         config = try await withLock(lockFile) {
-            var config = try await Config.load(ctx)
+            let previous = try await Config.load(ctx)
+            var config = previous
             config.installedToolchains.remove(toolchain)
             // This is here to prevent the inUse from referencing a toolchain that is not installed
             if config.inUse == toolchain {
@@ -340,7 +366,14 @@ struct Uninstall: SwiftlyCommand {
             }
             try config.save(ctx)
 
-            try await Swiftly.currentPlatform.uninstall(ctx, toolchain, verbose: verbose)
+            do {
+                try await Swiftly.currentPlatform.uninstall(ctx, toolchain, verbose: verbose)
+            } catch let error as ToolchainNotRemovedError {
+                // The platform removed nothing (the toolchain is in use, for example): the
+                // toolchain is still there, and so is its configuration.
+                try? previous.save(ctx)
+                throw error
+            }
             return config
         }
         await ctx.message("done")

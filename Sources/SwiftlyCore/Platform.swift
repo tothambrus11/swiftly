@@ -181,6 +181,17 @@ public protocol Platform: Sendable {
     /// behind to be deleted later (because it's running, for example), or nil when it's gone.
     func removeFromBinDir(_ ctx: SwiftlyCoreContext, _ proxy: FilePath) async throws -> FilePath?
 
+    /// Who can run the post-install script, as the message about it names them.
+    var systemAdministrator: String { get }
+
+    /// Why swiftly can't install `version` on this platform, or nil if it can. `list-available`
+    /// leaves such versions out, and `install` stops before downloading them.
+    func unsupportedToolchainReason(_ ctx: SwiftlyCoreContext, _ version: ToolchainVersion) -> String?
+
+    /// Why swiftly can't uninstall `toolchain`, for toolchains the system reports that were installed
+    /// outside of swiftly; nil for those swiftly can uninstall.
+    func externallyInstalledToolchainNote(_ ctx: SwiftlyCoreContext, _ toolchain: ToolchainVersion) async -> String?
+
     /// How new sessions find swiftly on platforms that don't use a shell profile and swiftly's
     /// `env.sh`/`env.fish`, or nil on platforms that do.
     var sessionEnvironment: (any SessionEnvironment)? { get }
@@ -272,6 +283,18 @@ extension Platform {
     public func removeFromBinDir(_: SwiftlyCoreContext, _ proxy: FilePath) async throws -> FilePath? {
         try await fs.remove(atPath: proxy)
         return nil
+    }
+
+    public func externallyInstalledToolchainNote(_: SwiftlyCoreContext, _: ToolchainVersion) async -> String? {
+        nil
+    }
+
+    public func unsupportedToolchainReason(_: SwiftlyCoreContext, _: ToolchainVersion) -> String? {
+        nil
+    }
+
+    public var systemAdministrator: String {
+        "the system administrator (e.g. root)"
     }
 
     public var sessionEnvironment: (any SessionEnvironment)? {
@@ -394,4 +417,22 @@ extension Platform {
     }
 
 #endif
+}
+
+/// Thrown by `Platform.uninstall` when it removed nothing, so that the toolchain is still there as
+/// it was (for example because a program from it is running), and swiftly keeps it configured.
+public struct ToolchainNotRemovedError: Error, CustomStringConvertible, LocalizedError {
+    public var message: String
+
+    public init(message: String) {
+        self.message = message
+    }
+
+    public var description: String {
+        self.message
+    }
+
+    public var errorDescription: String? {
+        self.message
+    }
 }

@@ -2,6 +2,11 @@ import Foundation
 @testable import Swiftly
 @testable import SwiftlyCore
 import Testing
+#if os(Windows)
+import SystemPackage
+@testable import WindowsPlatform
+import WinSDK
+#endif
 
 @Suite struct UninstallTests {
     static let homeName = "uninstallTests"
@@ -267,6 +272,52 @@ import Testing
             description: "uninstall did not succeed even with -y provided"
         )
     }
+
+#if os(Windows)
+    /// Holds a file of the toolchain open without sharing, as a running program from it would, so
+    /// that Windows can't rename or delete the toolchain's directory.
+    static func holdingToolchainOpen(_ toolchain: ToolchainVersion, _ body: () async throws -> Void) async throws {
+        let toolchainDir = Swiftly.currentPlatform.swiftlyToolchainsDir(SwiftlyTests.ctx) / toolchain.name
+        let file = toolchainDir / "in-use.txt"
+        try Data("in use".utf8).write(to: file)
+        let handle = file.string.withCString(encodedAs: UTF16.self) {
+            CreateFileW($0, DWORD(GENERIC_READ), 0, nil, DWORD(OPEN_EXISTING), DWORD(FILE_ATTRIBUTE_NORMAL), nil)
+        }
+        let budget = Windows.uninstallRenameBudget
+        Windows.uninstallRenameBudget = 1
+        defer {
+            Windows.uninstallRenameBudget = budget
+            if let handle { CloseHandle(handle) }
+        }
+        try await body()
+    }
+
+    /// A toolchain in use can't be uninstalled: it stays installed and the default stays it.
+    @Test(.mockedSwiftlyVersion(), .mockHomeToolchains(Self.homeName, toolchains: [.oldStable, .newStable], inUse: .newStable))
+    func uninstallInUseToolchainThatCantBeRemoved() async throws {
+        try await Self.holdingToolchainOpen(.newStable) {
+            await #expect(throws: (any Error).self) {
+                try await SwiftlyTests.runCommand(Uninstall.self, ["uninstall", "-y", ToolchainVersion.newStable.name])
+            }
+        }
+        let config = try await Config.load()
+        #expect(config.inUse == .newStable)
+        #expect(config.installedToolchains.contains(.newStable))
+    }
+
+    /// `uninstall all` goes on past such a toolchain, which stays installed and the default.
+    @Test(.mockedSwiftlyVersion(), .mockHomeToolchains(Self.homeName, toolchains: [.oldStable, .newStable], inUse: .newStable))
+    func uninstallAllKeepsAnInUseToolchainThatCantBeRemoved() async throws {
+        try await Self.holdingToolchainOpen(.newStable) {
+            await #expect(throws: (any Error).self) {
+                try await SwiftlyTests.runCommand(Uninstall.self, ["uninstall", "-y", "all"])
+            }
+        }
+        let config = try await Config.load()
+        #expect(config.inUse == .newStable)
+        #expect(config.installedToolchains == [.newStable])
+    }
+#endif
 
     /// Tests that providing "all" as an argument to uninstall will uninstall all toolchains.
     @Test(.mockedSwiftlyVersion(), .mockHomeToolchains(Self.homeName, toolchains: [.oldStable, .newStable, .newMainSnapshot, .oldReleaseSnapshot])) func uninstallAll() async throws {

@@ -131,7 +131,7 @@ struct Install: SwiftlyCommand {
                     message: """
 
                     There are some dependencies that should be installed before using this toolchain.
-                    You can run the following script as the system administrator (e.g. root) to prepare
+                    You can run the following script as \(Swiftly.currentPlatform.systemAdministrator) to prepare
                     your system:
 
                     \(postInstallScript)
@@ -274,6 +274,10 @@ struct Install: SwiftlyCommand {
             await ctx.message(
                 "Toolchain \(version) can no longer be located in \(toolchainBinDir). You can try `swiftly uninstall \(version.name); swiftly install \(version.name)` to reinstall it."
             )
+        }
+
+        if let reason = Swiftly.currentPlatform.unsupportedToolchainReason(ctx, version) {
+            throw SwiftlyError(message: "Can't install \(version): \(reason)")
         }
 
         // Ensure the system is set up correctly before downloading it. Problems that prevent installation

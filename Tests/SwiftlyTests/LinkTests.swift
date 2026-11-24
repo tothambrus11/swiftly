@@ -5,7 +5,7 @@ import Testing
 
 @Suite struct LinkTests {
     /// Tests that enabling swiftly results in swiftlyBinDir being populated with symlinks.
-    @Test(.testHomeMockedToolchain()) func testLink() async throws {
+    @Test(.testHomeMockedToolchain(), .disabled(if: isWindows, "symbolic links; on Windows, proxies are hard links (WindowsPlatformTests)")) func testLink() async throws {
         try await SwiftlyTests.withTestHome {
             let swiftlyBinDir = Swiftly.currentPlatform.swiftlyBinDir(SwiftlyTests.ctx)
             let swiftlyBinaryPath = swiftlyBinDir / "swiftly"
