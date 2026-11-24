@@ -143,8 +143,9 @@ jobs:
             $env:SWIFTLY_BIN_DIR = Join-Path $env:SWIFTLY_HOME_DIR 'bin'
             $env:SWIFTLY_TOOLCHAINS_DIR = Join-Path $env:SWIFTLY_HOME_DIR 'toolchains'
           }
-          # Until the toolchains' signatures are verified, installing needs --no-verify.
-          $more = @{ InstallOptions = @('--no-verify') }
+          $more = @{}
+          # Requiring revocation checks depends on the CA's servers: only the experimental job does.
+          if ('${{ matrix.experimental }}' -eq 'true') { $env:SWIFTLY_REQUIRE_REVOCATION_CHECK = '1' }
           if ('${{ matrix.nonascii }}' -eq 'true') { $more.OlderInstallOnly = $true }
           if ('${{ matrix.first }}') { $more.First = '${{ matrix.first }}'; $more.Older = '${{ matrix.older }}' }
           ./.github/scripts/windows/test-swiftly.ps1 -Swiftly "$env:RUNNER_TEMP\swiftly-download\swiftly.exe" @more

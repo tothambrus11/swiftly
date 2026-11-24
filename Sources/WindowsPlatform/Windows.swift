@@ -35,6 +35,11 @@ public struct Windows: Platform {
         "\"\(path.string)\""
     }
 
+    /// The installer stays open (see Authenticode.verify) until the download is released.
+    public func releaseDownload(_: SwiftlyCoreContext, _ file: FilePath) {
+        Authenticode.release(file)
+    }
+
     public var systemAdministrator: String {
         "an administrator"
     }
@@ -54,6 +59,7 @@ public struct Windows: Platform {
         guard try await fs.exists(atPath: tmpFile) else {
             throw SwiftlyError(message: "\(tmpFile) doesn't exist")
         }
+        defer { Authenticode.release(tmpFile) }
         let toolchainsDir = self.swiftlyToolchainsDir(ctx)
         try await fs.mkdir(.parents, atPath: toolchainsDir)
 
@@ -69,7 +75,7 @@ public struct Windows: Platform {
         }
         let staging = try WindowsToolchain.makeStagingDirectory(in: toolchainsDir)
         defer { try? FileManager.default.removeItem(atPath: staging.string) }
-        let unpacked = try await WindowsToolchain.unpack(ctx, tmpFile, staging: staging, verbose: verbose)
+        let unpacked = try await WindowsToolchain.unpack(ctx, tmpFile, staging: staging, version: version, verbose: verbose)
         guard let unpackedLayout = WindowsToolchainLayout.read(unpacked) else {
             throw SwiftlyError(message: "The installer for \(version) didn't contain a complete toolchain.")
         }
@@ -201,12 +207,8 @@ public struct Windows: Platform {
     /// says how to get them. Nothing is downloaded here.
     public func verifySystemPrerequisitesForInstall(
         _ ctx: SwiftlyCoreContext, platformName _: String, version _: ToolchainVersion,
-        requireSignatureValidation: Bool
+        requireSignatureValidation _: Bool
     ) async throws -> String? {
-        // Before anything is downloaded: signatures can't be verified yet (see verifyToolchainSignature).
-        if requireSignatureValidation, !ctx.installsTestToolchains {
-            throw SwiftlyError(message: "Verifying the signatures of Windows toolchains isn't supported yet; pass --no-verify to install without verifying.")
-        }
         guard ctx.mockedHomeDir == nil else {
             return nil
         }
@@ -219,15 +221,18 @@ public struct Windows: Platform {
     }
 
     public func verifyToolchainSignature(
-        _ ctx: SwiftlyCoreContext, toolchainFile _: ToolchainFile, archive _: FilePath, verbose _: Bool
+        _ ctx: SwiftlyCoreContext, toolchainFile _: ToolchainFile, archive: FilePath, verbose: Bool
     ) async throws {
         // Tests' own toolchain archives aren't signed.
         guard !ctx.installsTestToolchains else {
             return
         }
-        // The swift.org Windows installers carry Authenticode signatures rather than PGP ones;
-        // checking them comes in a follow-up. Until then, installing needs an explicit --no-verify.
-        throw SwiftlyError(message: "Verifying the signatures of Windows toolchains isn't supported yet; pass --no-verify to install without verifying.")
+        // swift.org doesn't publish PGP signatures for its Windows installers. They carry
+        // Authenticode signatures instead, which Windows itself checks.
+        if verbose {
+            await ctx.message("Verifying the toolchain's Authenticode signature...")
+        }
+        try await Authenticode.verify(ctx, archive, signer: Authenticode.swiftOrg)
     }
 
     /// Swift 6.2 and later: older installers have another layout (sdk.windows.<arch>.msi rather

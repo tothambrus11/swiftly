@@ -182,18 +182,19 @@ let package = Package(
             swiftSettings: swiftSettings
         ),
         .target(
-            name: "CMsi",
+            name: "CWinSDKExtras",
             linkerSettings: [
                 .linkedLibrary("msi", .when(platforms: [.windows])),
                 .linkedLibrary("cabinet", .when(platforms: [.windows])),
                 .linkedLibrary("bcrypt", .when(platforms: [.windows])),
+                .linkedLibrary("wintrust", .when(platforms: [.windows])),
             ]
         ),
         .target(
             name: "WindowsPlatform",
             dependencies: [
                 "SwiftlyCore",
-                .target(name: "CMsi", condition: .when(platforms: [.windows])),
+                .target(name: "CWinSDKExtras", condition: .when(platforms: [.windows])),
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "SystemPackage", package: "swift-system"),
             ],
