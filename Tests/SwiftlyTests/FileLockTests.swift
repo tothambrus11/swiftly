@@ -125,7 +125,8 @@ import Testing
                 try await Task.sleep(for: .seconds(0.1))
                 let waitingLock = try await FileLock.waitForLock(
                     lockPath,
-                    timeout: 2.0,
+                    // Deleting the initial lock can take a moment longer on Windows (see retryingSharingViolations).
+                    timeout: isWindows ? 30.0 : 2.0,
                     pollingInterval: 0.1
                 )
                 try await waitingLock.unlock()

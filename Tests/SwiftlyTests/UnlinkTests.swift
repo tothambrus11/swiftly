@@ -5,7 +5,7 @@ import Testing
 
 @Suite struct UnlinkTests {
     /// Tests that disabling swiftly results in swiftlyBinDir with no symlinks to toolchain binaries in it.
-    @Test(.testHomeMockedToolchain()) func testUnlink() async throws {
+    @Test(.testHomeMockedToolchain(), .disabled(if: isWindows, "symbolic links; on Windows, proxies are hard links (WindowsPlatformTests)")) func testUnlink() async throws {
         try await SwiftlyTests.withTestHome {
             let swiftlyBinDir = Swiftly.currentPlatform.swiftlyBinDir(SwiftlyTests.ctx)
             let swiftlyBinaryPath = swiftlyBinDir / "swiftly"

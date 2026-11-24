@@ -609,6 +609,26 @@ import WinSDK
         }
     }
 
+    /// Foundation reports a sharing violation as a CocoaError over its own Win32Error; the retry
+    /// helpers read the code from there. This fails if that stops working.
+    @Test func recognizesSharingViolationsFromFoundation() async throws {
+        try await self.withScratchDirectory { dir in
+            let file = dir / "locked.json"
+            try Data("{}".utf8).write(to: file)
+            let handle = file.string.withCString(encodedAs: UTF16.self) {
+                CreateFileW($0, DWORD(GENERIC_READ), 0, nil, DWORD(OPEN_EXISTING), DWORD(FILE_ATTRIBUTE_NORMAL), nil)
+            }
+            defer { if let handle { CloseHandle(handle) } }
+            do {
+                try Data("{}".utf8).write(to: URL(fileURLWithPath: file.string), options: .atomic)
+                Issue.record("writing a file another handle holds exclusively succeeded")
+            } catch {
+                #expect(isInUse(error), "\(error)")
+            }
+            #expect(!isInUse(CocoaError(.fileWriteNoPermission)))
+        }
+    }
+
     @Test func refusesCabinetsOf2GBOrMore() throws {
         #expect(throws: SwiftlyError.self) {
             try Cabinet.extract(from: FilePath(#"C:\nonexistent"#), offset: 0, length: Int(Int32.max), files: [:])

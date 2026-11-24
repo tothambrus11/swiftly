@@ -9,7 +9,7 @@ import NIO
 @testable import SwiftlyCore
 import Testing
 
-@Suite struct SelfUpdateTests {
+@Suite(.disabled(if: isWindows, "self-update isn't supported on Windows yet")) struct SelfUpdateTests {
     private static var newMajorVersion: SwiftlyVersion {
         SwiftlyVersion(major: SwiftlyCore.version.major + 1, minor: 0, patch: 0)
     }

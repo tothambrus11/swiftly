@@ -9,7 +9,7 @@ public typealias sys = SystemCommand
 
 @Suite
 public struct CommandLineTests {
-    @Test func testDsclModel() {
+    @Test(.disabled(if: isWindows, "models of macOS and Linux tools, whose path arguments FilePath writes with backslashes on Windows")) func testDsclModel() {
         var cmd = sys.dscl(datasource: ".").read(path: .init("/Users/swiftly"), key: ["UserShell"])
         var config = cmd.config()
         var args = cmd.commandArgs()
@@ -56,7 +56,7 @@ public struct CommandLineTests {
         #expect(args == ["swiftly", "-create", "-output", "swiftly-universal-with-one-arch"])
     }
 
-    @Test func testPkgbuild() {
+    @Test(.disabled(if: isWindows, "models of macOS and Linux tools, whose path arguments FilePath writes with backslashes on Windows")) func testPkgbuild() {
         var cmd = sys.pkgbuild(.root("mypath"), package_output_path: "outputDir")
         var config = cmd.config()
         var args = cmd.commandArgs()
@@ -169,7 +169,7 @@ public struct CommandLineTests {
         }
     }
 
-    @Test func testTarModel() {
+    @Test(.disabled(if: isWindows, "models of macOS and Linux tools, whose path arguments FilePath writes with backslashes on Windows")) func testTarModel() {
         var cmd = sys.tar(.directory("/some/cool/stuff")).create(.compressed, .archive("abc.tgz"), files: ["a", "b"])
         var config = cmd.config()
         var args = cmd.commandArgs()
@@ -230,7 +230,7 @@ public struct CommandLineTests {
         #expect(contents2 == "README")
     }
 
-    @Test func testSwiftModel() async throws {
+    @Test(.disabled(if: isWindows, "models of macOS and Linux tools, whose path arguments FilePath writes with backslashes on Windows")) func testSwiftModel() async throws {
         let cmd = sys.swift().package().reset()
         var config = cmd.config()
         var args = cmd.commandArgs()
@@ -340,7 +340,7 @@ public struct CommandLineTests {
         #expect(args == ["--verify", "file.sig", "file"])
     }
 
-    @Test func testPkgutil() async throws {
+    @Test(.disabled(if: isWindows, "models of macOS and Linux tools, whose path arguments FilePath writes with backslashes on Windows")) func testPkgutil() async throws {
         let checkSigCmd = sys.pkgutil(.verbose).checksignature(pkg_path: FilePath("path/to/my.pkg"))
         var config = checkSigCmd.config()
         var args = checkSigCmd.commandArgs()
@@ -360,7 +360,7 @@ public struct CommandLineTests {
         #expect(args == ["--volume", "/Users/foo", "--forget", "com.example.pkg"])
     }
 
-    @Test func testInstaller() async throws {
+    @Test(.disabled(if: isWindows, "models of macOS and Linux tools, whose path arguments FilePath writes with backslashes on Windows")) func testInstaller() async throws {
         let cmd = sys.installer(.verbose, .pkg(FilePath("path/to/my.pkg")), .target("CurrentUserHomeDirectory"))
         let config = cmd.config()
         let args = cmd.commandArgs()

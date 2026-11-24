@@ -40,15 +40,15 @@ import Testing
         }
     }
 
-    @Test(.mockedSwiftlyVersion(), .withShell("/bin/bash")) func removesEntryFromShellProfile_bash() async throws {
+    @Test(.mockedSwiftlyVersion(), .withShell("/bin/bash"), .disabled(if: isWindows, "shell profiles; on Windows, self-uninstall removes the Path entry")) func removesEntryFromShellProfile_bash() async throws {
         try await self.shellProfileRemovalTest()
     }
 
-    @Test(.mockedSwiftlyVersion(), .withShell("/bin/zsh")) func removesEntryFromShellProfile_zsh() async throws {
+    @Test(.mockedSwiftlyVersion(), .withShell("/bin/zsh"), .disabled(if: isWindows, "shell profiles; on Windows, self-uninstall removes the Path entry")) func removesEntryFromShellProfile_zsh() async throws {
         try await self.shellProfileRemovalTest()
     }
 
-    @Test(.mockedSwiftlyVersion(), .withShell("/bin/fish")) func removesEntryFromShellProfile_fish() async throws {
+    @Test(.mockedSwiftlyVersion(), .withShell("/bin/fish"), .disabled(if: isWindows, "shell profiles; on Windows, self-uninstall removes the Path entry")) func removesEntryFromShellProfile_fish() async throws {
         try await self.shellProfileRemovalTest()
     }
 

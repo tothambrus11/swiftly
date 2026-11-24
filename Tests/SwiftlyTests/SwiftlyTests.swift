@@ -34,6 +34,16 @@ extension Subprocess.Executable {
     }
 }
 
+/// Whether the tests run on Windows, to skip those of what only Linux and macOS have: shell
+/// profiles, symbolic links, POSIX tools and self-update.
+let isWindows: Bool = {
+#if os(Windows)
+    true
+#else
+    false
+#endif
+}()
+
 let unmockedMsg = "All swiftly test case logic must be mocked in order to prevent mutation of the system running the test. This test must either run swiftly components inside a SwiftlyTests.with... closure, or it must have one of the @Test traits, such as @Test(.testHome), or @Test(.mock...)"
 
 actor OutputHandlerFail: OutputHandler {
@@ -83,6 +93,8 @@ extension SwiftlyCoreContext {
         self.init(httpClient: SwiftlyHTTPClient(httpRequestExecutor: httpRequestExecutor))
 
         self.mockedHomeDir = mockedHomeDir
+        // The tests' toolchains are archives the tests make (see makeMockedToolchain).
+        self.installsTestToolchains = true
         self.currentDirectory = mockedHomeDir ?? fs.cwd
         self.httpClient = SwiftlyHTTPClient(httpRequestExecutor: httpRequestExecutor)
         self.outputHandler = outputHandler
@@ -252,11 +264,9 @@ public enum SwiftlyTests {
     /// output lines.
     static func runWithMockedIO<T: SwiftlyCommand, E: Error>(_ commandType: T.Type, _ arguments: [String], quiet: Bool = false, input: [String]? = nil, format: SwiftlyCore.OutputFormat = .text, throws expectedError: E.Type = NoError.self) async throws -> [String] {
         let handler = TestOutputHandler(quiet: quiet)
-        let provider: (any InputProvider)? = if let input {
-            TestInputProvider(lines: input)
-        } else {
-            nil
-        }
+        // Without input lines, prompts see the end of input (their default answer). Reading the test
+        // runner's stdin instead can block: on Windows it doesn't reach the end.
+        let provider: any InputProvider = TestInputProvider(lines: input ?? [])
 
         let ctx = SwiftlyCoreContext(
             mockedHomeDir: SwiftlyTests.ctx.mockedHomeDir,
@@ -303,7 +313,7 @@ public enum SwiftlyTests {
             mockedHomeDir: testHome,
             httpRequestExecutor: SwiftlyTests.ctx.httpClient.httpRequestExecutor,
             outputHandler: nil,
-            inputProvider: nil
+            inputProvider: TestInputProvider(lines: [])
         )
 
         try await fs.withTemporary(files: [testHome] + Swiftly.requiredDirectories(ctx)) {
@@ -420,6 +430,14 @@ public enum SwiftlyTests {
             let actualVersion = try await executable.version()
             #expect(actualVersion == toolchain)
         }
+#elseif os(Windows)
+        for toolchain in toolchains {
+            let swiftBinary = try await Swiftly.currentPlatform.findToolchainBinDir(Self.ctx, toolchain) / "swift.exe"
+            #expect(try await fs.exists(atPath: swiftBinary))
+
+            let actualVersion = try Self.getMockedToolchainVersion(at: swiftBinary)
+            #expect(actualVersion == toolchain)
+        }
 #elseif os(Linux)
         // Verify that the toolchains on disk correspond to those in the config.
         for toolchain in toolchains {
@@ -506,8 +524,9 @@ public actor TestInputProvider: SwiftlyCore.InputProvider {
         self.lines = lines
     }
 
+    /// The next line, or nil (the end of input) when there are no more.
     public func readLine() -> String? {
-        self.lines.removeFirst()
+        self.lines.isEmpty ? nil : self.lines.removeFirst()
     }
 }
 
@@ -656,6 +675,8 @@ public final actor MockToolchainDownloader: HTTPRequestExecutor {
             "Fedora 39"
         case PlatformDefinition(name: "fedora41", nameFull: "fedora41", namePretty: "Fedora Linux 41"):
             "Fedora 41"
+        case PlatformDefinition.windows10:
+            "Windows 10"
         case PlatformDefinition.macOS:
             "Xcode" // NOTE: this is not actually a platform that gets added in the swift.org API for macos/xcode
         default:
@@ -1048,14 +1069,78 @@ public final actor MockToolchainDownloader: HTTPRequestExecutor {
     }
 
 #elseif os(Windows)
-    // Windows toolchains and swiftly releases are installers that go through Windows Installer,
-    // and nothing mocks that yet, so tests that need one fail here instead of at build time.
+    // swiftly releases for Windows have no format yet.
     public func makeMockedSwiftly(from _: URL) async throws -> Data {
         throw SwiftlyTestError(message: "Mocked swiftly releases aren't supported on Windows yet.")
     }
 
-    public func makeMockedToolchain(toolchain _: ToolchainVersion, name _: String) async throws -> Data {
-        throw SwiftlyTestError(message: "Mocked toolchains aren't supported on Windows yet.")
+    /// A zip archive with the installer's layout, which the Windows platform installs like an
+    /// unpacked installer. Its executables are copies of `mockToolchainTool`, which prints the
+    /// toolchain's name.
+    public func makeMockedToolchain(toolchain: ToolchainVersion, name _: String) async throws -> Data {
+        let tmp = fs.mktemp()
+        let root = tmp / "toolchain"
+        let bin = root / "Toolchains" / toolchain.name / "usr" / "bin"
+        try await fs.mkdir(.parents, atPath: bin)
+        let runtime = root / "Runtimes" / toolchain.name / "usr" / "bin"
+        try await fs.mkdir(.parents, atPath: runtime)
+        // No DLLs: the mocked tools load the real Swift runtime from Path.
+        try Data().write(to: runtime / "README.txt")
+        let sdk = root / "Platforms" / toolchain.name / "Windows.platform" / "Developer" / "SDKs" / "Windows.sdk"
+        try await fs.mkdir(.parents, atPath: sdk)
+        try Data().write(to: sdk / "SDKSettings.json")
+
+        let tool = try await Self.mockToolchainTool.value
+        for executable in self.executables {
+            try await fs.copy(atPath: tool, toPath: executablePath(named: executable, in: bin))
+        }
+
+        let archive = tmp / "toolchain.zip"
+        let tar = Process()
+        tar.executableURL = URL(fileURLWithPath: (ProcessInfo.processInfo.environment["SystemRoot"] ?? #"C:\Windows"#) + #"\System32\tar.exe"#)
+        tar.currentDirectoryURL = URL(fileURLWithPath: root.string)
+        tar.arguments = ["-a", "-c", "-f", #"..\toolchain.zip"#, "Toolchains", "Runtimes", "Platforms"]
+        try tar.run()
+        tar.waitUntilExit()
+        guard tar.terminationStatus == 0 else {
+            throw SwiftlyTestError(message: "couldn't create the mocked toolchain archive")
+        }
+
+        let data = try Data(contentsOf: archive)
+        try await fs.remove(atPath: tmp)
+        return data
+    }
+
+    /// The stand-in for a mocked toolchain's executables, where the mocks can't be shell scripts as
+    /// on Linux: installed as `...\Toolchains\<name>\usr\bin\<tool>.exe`, it prints the toolchain's
+    /// name, like the Linux mocks do. It's compiled once per test run with the swiftc on Path.
+    static let mockToolchainTool = Task<FilePath, Error> {
+        let source = #"""
+        import Foundation
+        import WinSDK
+
+        var buffer = [WCHAR](repeating: 0, count: 32768)
+        let length = Int(GetModuleFileNameW(nil, &buffer, DWORD(buffer.count)))
+        let path = URL(fileURLWithPath: String(decoding: buffer[..<length], as: UTF16.self))
+        print(path.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().lastPathComponent)
+        """#
+        let dir = fs.mktemp()
+        try await fs.mkdir(.parents, atPath: dir)
+        try Data(source.utf8).write(to: dir / "main.swift")
+        let path = ProcessInfo.processInfo.environment.first { $0.key.caseInsensitiveCompare("Path") == .orderedSame }?.value ?? ""
+        guard let swiftc = path.split(separator: ";").map({ FilePath(String($0)) / "swiftc.exe" }).first(where: { FileManager.default.fileExists(atPath: $0.string) }) else {
+            throw SwiftlyTestError(message: "swiftc.exe isn't on Path; the Windows tests need it to build their mocked toolchain")
+        }
+        let compile = Process()
+        compile.executableURL = URL(fileURLWithPath: swiftc.string)
+        compile.currentDirectoryURL = URL(fileURLWithPath: dir.string)
+        compile.arguments = ["main.swift", "-o", "mock-tool.exe"]
+        try compile.run()
+        compile.waitUntilExit()
+        guard compile.terminationStatus == 0 else {
+            throw SwiftlyTestError(message: "couldn't compile the mocked toolchain tool")
+        }
+        return dir / "mock-tool.exe"
     }
 
 #endif

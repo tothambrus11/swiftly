@@ -91,11 +91,20 @@ jobs:
         shell: pwsh
         run: ./scripts/prep-gh-action.ps1
       - name: Build swiftly
+        # Statically linked, so swiftly.exe (and the proxies, which are hard links to it) needs no Swift runtime.
         run: swift build -c release --product swiftly --static-swift-stdlib
-      - name: Build the tests
-        run: swift build --build-tests
-      - name: Run the tests that pass on Windows so far
-        run: swift test --skip-build --filter "WindowsPlatformTests|PlatformTests/(toolchainDownloadPlatform|arm64SnapshotsOfWindows)"
+      - name: Collect swiftly.exe
+        shell: pwsh
+        run: Copy-Item (Join-Path (swift build -c release --show-bin-path) 'swiftly.exe') swiftly.exe
+      - name: Upload swiftly.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftly-windows-${{ matrix.arch }}
+          path: swiftly.exe
+          if-no-files-found: error
+          retention-days: 1
+      - name: Build and Test
+        run: swift test
 
   releasebuildcheck:
     name: Release Build Check / Linux
