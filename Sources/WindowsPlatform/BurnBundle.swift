@@ -291,6 +291,37 @@ enum BurnBundle {
         return msis
     }
 
+    /// Throws unless the bundle's manifest says it's `version`: a release's `Registration`
+    /// version starts with the release's major.minor.patch. A snapshot's bundle says 0.0.0; if its
+    /// registration names a date, it must be the snapshot's.
+    static func checkVersion(_ manifest: BurnManifest, is version: ToolchainVersion) throws {
+        let registration = manifest.registration
+        switch version {
+        case let .stable(release):
+            let expected = "\(release.major).\(release.minor).\(release.patch)"
+            guard let actual = registration["Version"], actual == expected || actual.hasPrefix(expected + ".") else {
+                throw SwiftlyError(message: "The installer is for Swift \(registration["Version"] ?? "(no version)"), not \(expected).")
+            }
+        case let .snapshot(snapshot):
+            // Snapshot bundles say 0.0.0; a release's bundle (signed too) isn't a snapshot.
+            guard registration["Version"] == "0.0.0" else {
+                throw SwiftlyError(message: "The installer is for Swift \(registration["Version"] ?? "(no version)"), not a snapshot.")
+            }
+            // Snapshot bundles say 0.0.0 and carry no date or tag (as of 2026-10): then there's
+            // nothing signed to tie them to, and only a date they do name is checked.
+            let named = registration.values.flatMap { $0.matches(of: #/\d{4}-\d{2}-\d{2}/#).map { String($0.output) } }
+            guard !named.isEmpty else {
+                return
+            }
+            let date = snapshot.date
+            guard named.contains(date) else {
+                throw SwiftlyError(message: "The installer doesn't say it's the \(date) snapshot (its registration: \(registration.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ", "))).")
+            }
+        case .xcode:
+            throw SwiftlyError(message: "Xcode toolchains are for macOS.")
+        }
+    }
+
     /// Checks an extracted payload against the size and hash the manifest lists for it.
     static func verify(_ payload: BurnManifest.Payload, at path: FilePath) throws {
         if let size = payload.fileSize,

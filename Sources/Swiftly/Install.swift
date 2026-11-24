@@ -294,6 +294,7 @@ struct Install: SwiftlyCommand {
         let tmpFile = fs.mktemp(ext: ".\(Swiftly.currentPlatform.toolchainFileExtension)")
         try await fs.create(file: tmpFile, contents: nil)
         return try await fs.withTemporary(files: tmpFile) {
+            defer { Swiftly.currentPlatform.releaseDownload(ctx, tmpFile) }
             let (platformString, platformFullString) = Swiftly.currentPlatform.toolchainDownloadPlatform(config.platform)
 
             let category: String

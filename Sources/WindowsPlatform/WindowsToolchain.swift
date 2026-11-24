@@ -1,5 +1,5 @@
 import _StringProcessing
-import CMsi
+import CWinSDKExtras
 import Foundation
 import SwiftlyCore
 import SystemPackage
@@ -238,7 +238,7 @@ enum WindowsToolchain {
 
     /// Unpacks `file`, a swift.org installer or a zip archive with the installer's layout, into
     /// `staging` and returns the unpacked toolchain root (Toolchains, Runtimes, Platforms).
-    static func unpack(_ ctx: SwiftlyCoreContext, _ file: FilePath, staging: FilePath, verbose: Bool) async throws -> FilePath {
+    static func unpack(_ ctx: SwiftlyCoreContext, _ file: FilePath, staging: FilePath, version: ToolchainVersion? = nil, verbose: Bool) async throws -> FilePath {
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: file.string))
         let magic = try handle.read(upToCount: 2) ?? Data()
         try handle.close()
@@ -256,16 +256,21 @@ enum WindowsToolchain {
             try FileManager.default.copyItem(atPath: file.string, toPath: (staging / "archive.zip").string)
             try await Win32.runTool("tar.exe", ["-xf", "..\\archive.zip"], in: root)
         } else {
-            root = try await self.unpackInstaller(ctx, file, staging: staging, verbose: verbose)
+            root = try await self.unpackInstaller(ctx, file, staging: staging, version: version, verbose: verbose)
         }
         try self.prune(root)
         try self.linkDuplicates(in: root)
         return root
     }
 
-    private static func unpackInstaller(_ ctx: SwiftlyCoreContext, _ bundle: FilePath, staging: FilePath, verbose: Bool) async throws -> FilePath {
+    private static func unpackInstaller(_ ctx: SwiftlyCoreContext, _ bundle: FilePath, staging: FilePath, version: ToolchainVersion?, verbose: Bool) async throws -> FilePath {
         var selection: PackageSelection?
         let msis = try await BurnBundle.extract(ctx, bundle, into: staging / "b", select: { manifest in
+            // The manifest is part of the signed bundle: it must be the version that was asked for,
+            // not another (older) installer that's validly signed too.
+            if let version {
+                try BurnBundle.checkVersion(manifest, is: version)
+            }
             let picked = try self.selectPackages(manifest, arch: self.runtimeArch)
             selection = picked
             return picked.toolchain + [picked.runtime] + picked.others

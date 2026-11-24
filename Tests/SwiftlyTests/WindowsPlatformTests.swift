@@ -373,6 +373,104 @@ import WinSDK
         #expect(try environment.read("SWIFTLY_BIN_DIR") != nil)
     }
 
+    // MARK: Authenticode
+
+    @Test func authenticodeActionIsGenericVerifyV2() {
+        // {00AAC56B-CD44-11D0-8CC2-00C04FC295EE}
+        let bytes = withUnsafeBytes(of: Authenticode.genericVerifyV2) { Array($0) }
+        // Data1, Data2 and Data3 are little-endian.
+        #expect(bytes == [0x6B, 0xC5, 0xAA, 0x00, 0x44, 0xCD, 0xD0, 0x11, 0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE])
+    }
+
+    @Test func describesTrustErrors() {
+        #expect(Authenticode.describe(Int32(bitPattern: 0x800B_0100)).hasPrefix("the file isn't signed"))
+        #expect(Authenticode.describe(Int32(bitPattern: 0x8009_6010)).hasPrefix("the file was changed"))
+        #expect(Authenticode.describe(1234) == "error 0x4D2")
+        #expect(Authenticode.isRevocationOffline(Int32(bitPattern: 0x8009_2013)))
+        #expect(!Authenticode.isRevocationOffline(Int32(bitPattern: 0x800B_010C))) // revoked is a real error
+    }
+
+    /// The signer of swift.org's installers (as of 2026), and variations that must fail.
+    @Test func comparesSignersWithTheRequirement() {
+        let apple = Authenticode.Signer(
+            commonName: "Apple Inc.", organization: "Apple Inc.", locality: "Cupertino", state: "California", country: "US",
+            rootCommonName: "DigiCert Trusted Root G4", rootOrganization: "DigiCert Inc",
+            keyUsages: ["1.3.6.1.5.5.7.3.3"]
+        )
+        #expect(Authenticode.swiftOrg.mismatch(apple) == nil)
+        // A renewed certificate under another intermediate, with more usages, still passes.
+        var renewed = apple
+        renewed.keyUsages = ["1.3.6.1.4.1.311.10.3.13", "1.3.6.1.5.5.7.3.3"]
+        #expect(Authenticode.swiftOrg.mismatch(renewed) == nil)
+
+        var other = apple
+        other.organization = "Microsoft Corporation"
+        let message = Authenticode.swiftOrg.mismatch(other)
+        #expect(message?.contains("O=Microsoft Corporation") == true)
+        #expect(message?.contains("O=Apple Inc.") == true)
+
+        var otherCountry = apple
+        otherCountry.country = "IE"
+        #expect(Authenticode.swiftOrg.mismatch(otherCountry) != nil)
+        var otherRoot = apple
+        otherRoot.rootCommonName = "Some Root"
+        #expect(Authenticode.swiftOrg.mismatch(otherRoot)?.contains("root") == true)
+        var otherPlace = apple
+        otherPlace.locality = "Austin"
+        #expect(Authenticode.swiftOrg.mismatch(otherPlace) != nil)
+        // A revocation check that couldn't be done may pass; other chain errors may not.
+        #expect(Authenticode.onlyRevocationUnknown(0x40 | 0x0100_0000))
+        #expect(!Authenticode.onlyRevocationUnknown(0x40 | 0x4)) // and revoked
+        #expect(!Authenticode.onlyRevocationUnknown(0))
+        var notForCode = apple
+        notForCode.keyUsages = ["1.3.6.1.5.5.7.3.1"]
+        #expect(Authenticode.swiftOrg.mismatch(notForCode)?.contains("code signing") == true)
+    }
+
+    /// The signed manifest has to be the version asked for, not another signed installer.
+    @Test func tiesTheBundleToTheVersion() throws {
+        var manifest = try BurnManifest(xml: Self.burnManifest)
+        manifest.registration = ["Version": "6.4.3", "DisplayName": "Swift Developer Toolkit"]
+        #expect(throws: Never.self) { try BurnBundle.checkVersion(manifest, is: try ToolchainVersion(parsing: "6.4.3")) }
+        #expect(throws: SwiftlyError.self) { try BurnBundle.checkVersion(manifest, is: try ToolchainVersion(parsing: "6.4.2")) }
+        manifest.registration = ["Version": "0.0.0", "DisplayName": "Swift Developer Toolkit (2026-10-17)"]
+        #expect(throws: Never.self) { try BurnBundle.checkVersion(manifest, is: try ToolchainVersion(parsing: "main-snapshot-2026-10-17")) }
+        #expect(throws: SwiftlyError.self) { try BurnBundle.checkVersion(manifest, is: try ToolchainVersion(parsing: "main-snapshot-2026-10-16")) }
+        // A release's bundle isn't a snapshot's.
+        manifest.registration = ["Version": "5.10.1", "DisplayName": "Swift Developer Toolkit 5.10.1"]
+        #expect(throws: SwiftlyError.self) { try BurnBundle.checkVersion(manifest, is: try ToolchainVersion(parsing: "main-snapshot-2026-10-17")) }
+        // Today's snapshot bundles name no date: nothing to check.
+        manifest.registration = ["Version": "0.0.0", "DisplayName": "Swift Developer Toolkit 0.0.0", "Tag": ""]
+        #expect(throws: Never.self) { try BurnBundle.checkVersion(manifest, is: try ToolchainVersion(parsing: "main-snapshot-2026-10-16")) }
+    }
+
+    @Test func rejectsUnsignedFiles() async throws {
+        let file = fs.mktemp(ext: ".exe")
+        try Data("not signed".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(atPath: file.string) }
+        await #expect(throws: SwiftlyError.self) { try await Authenticode.verify(SwiftlyTests.ctx, file, signer: Authenticode.swiftOrg) }
+    }
+
+    /// A file with an embedded signature from someone else (Microsoft) fails, saying who signed it.
+    /// (Most of Windows' own files are catalog-signed, with no embedded signature.)
+    @Test func rejectsFilesSignedBySomeoneElse() async throws {
+        let candidates = [
+            Win32.system32 / "MpSigStub.exe",
+            FilePath(ProcessInfo.processInfo.environment["ProgramFiles"] ?? #"C:\Program Files"#) / "PowerShell" / "7" / "pwsh.exe",
+        ]
+        guard let signed = candidates.first(where: { FileManager.default.fileExists(atPath: $0.string) }) else {
+            return
+        }
+        defer { Authenticode.release(signed) }
+        do {
+            try await Authenticode.verify(SwiftlyTests.ctx, signed, signer: Authenticode.swiftOrg)
+            Issue.record("\(signed) passed as signed by swift.org")
+        } catch let error as SwiftlyError {
+            #expect(error.message.contains("O=Microsoft Corporation"), "\(error.message)")
+            #expect(error.message.contains("O=Apple Inc."), "\(error.message)")
+        }
+    }
+
     // MARK: Installing toolchains
 
     /// Builds an LZX cabinet with makecab.exe (part of Windows), embeds it in a larger file like a

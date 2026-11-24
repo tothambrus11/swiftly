@@ -181,6 +181,10 @@ public protocol Platform: Sendable {
     /// behind to be deleted later (because it's running, for example), or nil when it's gone.
     func removeFromBinDir(_ ctx: SwiftlyCoreContext, _ proxy: FilePath) async throws -> FilePath?
 
+    /// Lets go of a downloaded toolchain archive that `verifyToolchainSignature` checked, before
+    /// it's deleted. `install` runs it whether the installation worked or not.
+    func releaseDownload(_ ctx: SwiftlyCoreContext, _ file: FilePath)
+
     /// Who can run the post-install script, as the message about it names them.
     var systemAdministrator: String { get }
 
@@ -296,6 +300,8 @@ extension Platform {
     public var systemAdministrator: String {
         "the system administrator (e.g. root)"
     }
+
+    public func releaseDownload(_: SwiftlyCoreContext, _: FilePath) {}
 
     public var sessionEnvironment: (any SessionEnvironment)? {
         nil
