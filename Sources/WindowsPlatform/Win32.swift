@@ -130,4 +130,40 @@ enum Win32 {
         let size = Int(SizeofResource(module, resource))
         return String(decoding: UnsafeRawBufferPointer(start: bytes, count: size), as: UTF8.self)
     }
+
+    // MARK: Registry
+
+    /// Reads a string value without expanding environment references in it.
+    static func readString(_ key: HKEY, _ name: String) throws -> String? {
+        try name.withCString(encodedAs: UTF16.self) { nameW in
+            var size: DWORD = 0
+            let flags = DWORD(RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND)
+            var status = RegGetValueW(key, nil, nameW, flags, nil, nil, &size)
+            if status == ERROR_FILE_NOT_FOUND {
+                return nil
+            }
+            guard status == ERROR_SUCCESS else {
+                throw Win32.error("Reading registry value \(name)", DWORD(status))
+            }
+            var buffer = [WCHAR](repeating: 0, count: Int(size) / MemoryLayout<WCHAR>.size + 1)
+            status = RegGetValueW(key, nil, nameW, flags, nil, &buffer, &size)
+            guard status == ERROR_SUCCESS else {
+                throw Win32.error("Reading registry value \(name)", DWORD(status))
+            }
+            return String(decodingCString: buffer, as: UTF16.self)
+        }
+    }
+
+    /// Reads a string value from HKEY_LOCAL_MACHINE.
+    static func readMachineString(_ subkey: String, _ name: String) -> String? {
+        var key: HKEY?
+        let opened = subkey.withCString(encodedAs: UTF16.self) {
+            RegOpenKeyExW(HKEY_LOCAL_MACHINE, $0, 0, REGSAM(0x20019) /* KEY_READ */, &key)
+        }
+        guard opened == ERROR_SUCCESS, let key else {
+            return nil
+        }
+        defer { RegCloseKey(key) }
+        return try? self.readString(key, name)
+    }
 }

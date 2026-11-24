@@ -61,7 +61,14 @@ public struct Windows: Platform {
         guard let layout = WindowsToolchainLayout.read(toolchainDir) else {
             throw SwiftlyError(message: "The installer for \(version) didn't contain a complete toolchain.")
         }
-        _ = layout
+        let setup = await MSVCSysroot.currentSetup(ctx)
+        try MSVCSysroot.configure(layout, for: setup)
+        if setup == .unavailable {
+            await ctx.message("""
+            Warning: \(version) can't link programs until Visual Studio with the C++ tools and a Windows SDK \
+            is installed, or swiftly downloads the Microsoft C runtime and Windows SDK (unset SWIFTLY_MSVC=system).
+            """)
+        }
     }
 
     public func extractSwiftlyAndInstall(_: SwiftlyCoreContext, from _: FilePath) async throws {
@@ -91,12 +98,14 @@ public struct Windows: Platform {
     }
 
     public func verifySystemPrerequisitesForInstall(
-        _: SwiftlyCoreContext, platformName _: String, version _: ToolchainVersion,
+        _ ctx: SwiftlyCoreContext, platformName _: String, version _: ToolchainVersion,
         requireSignatureValidation _: Bool
     ) async throws -> String? {
-        // Linking programs needs Visual Studio with the C++ tools and a Windows SDK, as with the
-        // swift.org installer.
-        nil
+        // Toolchains link programs against the Microsoft C runtime and the Windows SDK: use Visual
+        // Studio's, or set up swiftly's sysroot (after the user accepts Microsoft's license terms)
+        // before the toolchain is downloaded.
+        _ = try await MSVCSysroot.prepare(ctx)
+        return nil
     }
 
     /// The subject of the certificate swift.org signs its Windows installers with.
