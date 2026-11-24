@@ -27,10 +27,9 @@ jobs:
           - { arch: arm64, runner: windows-11-arm }
     steps:
       - uses: actions/checkout@v4
-      - uses: compnerd/gha-setup-swift@main
-        with:
-          swift-version: swift-6.4.3-release
-          swift-build: 6.4.3-RELEASE
+      - name: Install Swift
+        shell: pwsh
+        run: ./.github/scripts/windows/install-swift.ps1 -Version 6.4.3
       - name: Build swiftly
         run: swift build -c release --product swiftly --static-swift-stdlib
       - name: Show swiftly's DLL dependencies
