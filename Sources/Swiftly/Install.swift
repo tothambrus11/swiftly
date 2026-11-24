@@ -175,8 +175,10 @@ struct Install: SwiftlyCommand {
                 }
             }
 
-            let overwrite = Set(toolchainBinDirContents).subtracting(existingProxies).intersection(
-                swiftlyBinDirContents)
+            // File names compare as the file system does: case-insensitively on Windows.
+            let existingKeys = Set(existingProxies.map(fileNameKey))
+            let binKeys = Set(swiftlyBinDirContents.map(fileNameKey))
+            let overwrite = Set(toolchainBinDirContents.filter { !existingKeys.contains(fileNameKey($0)) && binKeys.contains(fileNameKey($0)) })
             if !overwrite.isEmpty && !assumeYes {
                 await ctx.message("The following existing executables will be overwritten:")
 
@@ -193,9 +195,8 @@ struct Install: SwiftlyCommand {
                 await ctx.message("Setting up toolchain proxies...")
             }
 
-            let proxiesToCreate = Set(toolchainBinDirContents).subtracting(swiftlyBinDirContents)
-                .union(
-                    overwrite)
+            let proxiesToCreate = Set(toolchainBinDirContents.filter { !binKeys.contains(fileNameKey($0)) })
+                .union(overwrite)
 
             for p in proxiesToCreate {
                 let proxy = Swiftly.currentPlatform.swiftlyBinDir(ctx) / p

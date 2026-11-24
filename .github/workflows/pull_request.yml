@@ -95,7 +95,7 @@ jobs:
       - name: Build the tests
         run: swift build --build-tests
       - name: Run the tests that pass on Windows so far
-        run: swift test --skip-build --filter "PlatformTests/(toolchainDownloadPlatform|arm64SnapshotsOfWindows)"
+        run: swift test --skip-build --filter "WindowsPlatformTests|PlatformTests/(toolchainDownloadPlatform|arm64SnapshotsOfWindows)"
 
   releasebuildcheck:
     name: Release Build Check / Linux
