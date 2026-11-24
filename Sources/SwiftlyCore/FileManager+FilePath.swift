@@ -1,5 +1,8 @@
 import Foundation
 import SystemPackage
+#if os(Windows)
+import WinSDK
+#endif
 
 typealias fs = FileSystem
 
@@ -90,6 +93,54 @@ public enum FileSystem {
     public static func symlink(atPath: FilePath, linkPath: FilePath) async throws {
         try FileManager.default.createSymbolicLink(atPath: atPath, withDestinationPath: linkPath)
     }
+
+    /// Creates the proxy `atPath`, an executable that runs swiftly (`target`) under another name.
+    ///
+    /// Proxies are symbolic links, except on Windows, where creating a symbolic link needs Developer
+    /// Mode or administrator rights. There they are hard links, which work for any user because
+    /// the proxies live next to swiftly.exe, on the same volume.
+    public static func createProxy(atPath: FilePath, to target: FilePath) async throws {
+#if os(Windows)
+        let created = atPath.string.withCString(encodedAs: UTF16.self) { link in
+            target.string.withCString(encodedAs: UTF16.self) { CreateHardLinkW(link, $0, nil) }
+        }
+        guard created else {
+            throw SwiftlyError(message: "Couldn't create \(atPath) as a hard link to \(target) (Windows error \(GetLastError())).")
+        }
+#else
+        try await self.symlink(atPath: atPath, linkPath: target)
+#endif
+    }
+
+    /// Whether `atPath` is a proxy for `target` that `createProxy` created.
+    public static func isProxy(atPath: FilePath, to target: FilePath) async throws -> Bool {
+#if os(Windows)
+        guard let file = Self.fileIdentity(atPath), let swiftly = Self.fileIdentity(target) else {
+            return false
+        }
+        return file == swiftly
+#else
+        try await self.readlink(atPath: atPath) == target
+#endif
+    }
+
+#if os(Windows)
+    /// The volume serial number and file index, which all hard links to a file share.
+    private static func fileIdentity(_ path: FilePath) -> [UInt64]? {
+        let handle = path.string.withCString(encodedAs: UTF16.self) {
+            CreateFileW($0, 0, DWORD(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE), nil, DWORD(OPEN_EXISTING), DWORD(FILE_FLAG_BACKUP_SEMANTICS), nil)
+        }
+        guard let handle, handle != INVALID_HANDLE_VALUE else {
+            return nil
+        }
+        defer { CloseHandle(handle) }
+        var info = BY_HANDLE_FILE_INFORMATION()
+        guard GetFileInformationByHandle(handle, &info) else {
+            return nil
+        }
+        return [UInt64(info.dwVolumeSerialNumber), UInt64(info.nFileIndexHigh) << 32 | UInt64(info.nFileIndexLow)]
+    }
+#endif
 
     public static func chmod(atPath: FilePath, mode: Int) async throws {
         try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: atPath.string)

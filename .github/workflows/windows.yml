@@ -31,17 +31,58 @@ jobs:
         shell: pwsh
         run: ./.github/scripts/windows/install-swift.ps1 -Version 6.4.3
       - name: Build swiftly
+        # Statically linked, so swiftly.exe (and the proxies, which are hard links to it) needs no Swift runtime.
         run: swift build -c release --product swiftly --static-swift-stdlib
-      - name: Show swiftly's DLL dependencies
+      - name: Collect swiftly.exe
         shell: pwsh
         run: |
-          $exe = Get-ChildItem .build -Recurse -Filter swiftly.exe | Where-Object FullName -match 'release' | Select-Object -First 1
-          Write-Host "$($exe.FullName) $([math]::Round($exe.Length / 1MB, 1)) MB"
-          & $exe.FullName --version
-          Copy-Item $exe.FullName swiftly.exe
+          $exe = Join-Path (swift build -c release --show-bin-path) 'swiftly.exe'
+          Write-Host "$exe $([math]::Round((Get-Item $exe).Length / 1MB, 1)) MB"
+          Copy-Item $exe swiftly.exe
       - uses: actions/upload-artifact@v4
         with:
           name: swiftly-windows-${{ matrix.arch }}
           path: swiftly.exe
           if-no-files-found: error
           retention-days: 3
+
+  unit-tests:
+    name: Unit tests / x64
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Swift
+        shell: pwsh
+        run: ./.github/scripts/windows/install-swift.ps1 -Version 6.4.3
+      - name: Build tests
+        run: swift build --build-tests
+      - name: Run the Windows platform tests
+        run: swift test --skip-build --filter WindowsPlatformTests
+
+  end-to-end:
+    name: End to end / ${{ matrix.label }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: 'x64, no Visual Studio', arch: x64, runner: windows-2025, msvc: portable }
+          - { label: 'arm64, no Visual Studio', arch: arm64, runner: windows-11-arm, msvc: portable }
+          - { label: 'x64, Visual Studio', arch: x64, runner: windows-2025, msvc: visual-studio }
+    env:
+      JOB_LABEL: ${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: swiftly-windows-${{ matrix.arch }}
+          path: ${{ runner.temp }}/swiftly-download
+      - name: Hide Visual Studio, the Windows SDK and LLVM
+        if: matrix.msvc == 'portable'
+        shell: pwsh
+        run: ./.github/scripts/windows/hide-vs.ps1 | Out-Host
+      - name: Test swiftly
+        shell: pwsh
+        run: ./.github/scripts/windows/test-swiftly.ps1 -Swiftly "$env:RUNNER_TEMP\swiftly-download\swiftly.exe" -Msvc ${{ matrix.msvc }}

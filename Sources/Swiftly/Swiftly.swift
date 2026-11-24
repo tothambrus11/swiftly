@@ -145,6 +145,10 @@ extension SwiftlyCommand {
     }
 
     public static func handlePathChange(_ ctx: SwiftlyCoreContext) async throws {
+#if os(Windows)
+        // PowerShell and cmd look commands up on every run; there is nothing to refresh.
+        return
+#else
         let shell =
             if let s = ProcessInfo.processInfo.environment["SHELL"]
         {
@@ -166,5 +170,6 @@ extension SwiftlyCommand {
 
                 """)
         }
+#endif
     }
 }

@@ -97,6 +97,15 @@ public protocol HTTPRequestExecutor: Sendable {
         -> OpenAPIRuntime.HTTPBody
     func getSwiftToolchainFileSignature(_ toolchainFile: ToolchainFile) async throws
         -> OpenAPIRuntime.HTTPBody
+    /// Downloads a file from outside swift.org, such as the Microsoft packages that the Windows
+    /// platform downloads when Visual Studio isn't installed.
+    func getFile(url: URL) async throws -> OpenAPIRuntime.HTTPBody
+}
+
+extension HTTPRequestExecutor {
+    public func getFile(url: URL) async throws -> OpenAPIRuntime.HTTPBody {
+        throw SwiftlyError(message: "Downloading \(url) isn't supported.")
+    }
 }
 
 struct SwiftlyUserAgentMiddleware: ClientMiddleware {
@@ -163,44 +172,50 @@ public final class HTTPRequestExecutorImpl: HTTPRequestExecutor {
     }
 #endif
 
-    private func websiteClient() throws -> SwiftlyWebsiteAPI.Client {
-        let swiftlyUserAgent = SwiftlyUserAgentMiddleware()
-        let transport: ClientTransport
-
+    private func transport() -> ClientTransport {
 #if os(Windows)
-        transport = WinHttpTransport()
+        WinHttpTransport()
 #else
-        let config = AsyncHTTPClientTransport.Configuration(
+        AsyncHTTPClientTransport(configuration: AsyncHTTPClientTransport.Configuration(
             client: self.httpClient, timeout: .seconds(30)
-        )
-        transport = AsyncHTTPClientTransport(configuration: config)
+        ))
 #endif
+    }
 
-        return Client(
+    private func websiteClient() throws -> SwiftlyWebsiteAPI.Client {
+        Client(
             serverURL: try SwiftlyWebsiteAPI.Servers.productionURL(),
-            transport: transport,
-            middlewares: [swiftlyUserAgent]
+            transport: self.transport(),
+            middlewares: [SwiftlyUserAgentMiddleware()]
         )
     }
 
     private func downloadClient(baseURL: URL) throws -> SwiftlyDownloadAPI.Client {
-        let swiftlyUserAgent = SwiftlyUserAgentMiddleware()
-        let transport: ClientTransport
-
-#if os(Windows)
-        transport = WinHttpTransport()
-#else
-        let config = AsyncHTTPClientTransport.Configuration(
-            client: self.httpClient, timeout: .seconds(30)
-        )
-        transport = AsyncHTTPClientTransport(configuration: config)
-#endif
-
-        return SwiftlyDownloadAPI.Client(
+        SwiftlyDownloadAPI.Client(
             serverURL: baseURL,
-            transport: transport,
-            middlewares: [swiftlyUserAgent]
+            transport: self.transport(),
+            middlewares: [SwiftlyUserAgentMiddleware()]
         )
+    }
+
+    public func getFile(url: URL) async throws -> OpenAPIRuntime.HTTPBody {
+        guard url.scheme == "https", let host = url.host(percentEncoded: false), let baseURL = URL(string: "https://\(host)") else {
+            throw SwiftlyError(message: "Refusing to download \(url): only HTTPS URLs are supported.")
+        }
+        var path = url.path(percentEncoded: true)
+        if let query = url.query(percentEncoded: true) {
+            path += "?" + query
+        }
+        var request = HTTPRequest(method: .get, scheme: nil, authority: nil, path: path)
+        request.headerFields[.userAgent] = "swiftly/\(SwiftlyCore.version)"
+        let (response, body) = try await self.transport().send(request, body: nil, baseURL: baseURL, operationID: "getFile")
+        if response.status == .notFound {
+            throw DownloadNotFoundError(url: url)
+        }
+        guard response.status == .ok, let body else {
+            throw SwiftlyError(message: "Downloading \(url) failed: HTTP \(response.status.code)")
+        }
+        return body
     }
 
     public func getCurrentSwiftlyRelease() async throws
@@ -688,6 +703,10 @@ public struct SwiftlyHTTPClient: Sendable {
         -> OpenAPIRuntime.HTTPBody
     {
         try await self.httpRequestExecutor.getSwiftToolchainFileSignature(toolchainFile)
+    }
+
+    public func getFile(url: URL) async throws -> OpenAPIRuntime.HTTPBody {
+        try await self.httpRequestExecutor.getFile(url: url)
     }
 }
 
